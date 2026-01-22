@@ -558,6 +558,7 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
             chat_id = task_data["chat_id"]
             from database import get_session, User, ChatMember
             from sqlalchemy import select
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             import re
             
             async with get_session() as session:
@@ -616,7 +617,6 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
                         assignee_user = matching[0]
                     elif len(matching) > 1:
                         # Multiple matches - show buttons
-                        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
                         buttons = []
                         for m in matching[:5]:
                             name = f"{m.first_name or ''} {m.last_name or ''}".strip()
