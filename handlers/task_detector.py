@@ -496,6 +496,9 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
                     ])
                 )
                 context.user_data["waiting_deadline_for"] = action
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"Set waiting_deadline_for={action} for user {query.from_user.id}")
                 return
     
     # No assignee found, ask for it
