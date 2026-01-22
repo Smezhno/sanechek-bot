@@ -630,30 +630,65 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     if deadline_hash:
         task_data = context.bot_data.get(f"suggested_task_{deadline_hash}")
         if task_data:
-            from utils.date_parser import parse_datetime
-            deadline = parse_datetime(text)
+            from utils.date_parser import parse_deadline, DateParseError
+            from database import get_session, Task, User
+            from database.models import TaskStatus
+            
+            try:
+                deadline = parse_deadline(text)
+            except DateParseError as e:
+                await update.message.reply_text(
+                    f"❌ Не понял дату: {str(e)}\n\n"
+                    f"Попробуй ещё раз (например: завтра, через 3 дня, в пятницу в 16:00)"
+                )
+                return
             
             del context.user_data["waiting_deadline_for"]
             
             # Create the task
-            from database import get_session, Task
             async with get_session() as session:
+                # Get assignee_id if we have assignee_name
+                assignee_id = task_data.get("assignee_id")
+                if not assignee_id and task_data.get("assignee_name"):
+                    # Try to find by name
+                    assignee_name = task_data["assignee_name"]
+                    if "@" in assignee_name:
+                        username = assignee_name.replace("@", "")
+                        result = await session.execute(
+                            select(User).where(User.username == username)
+                        )
+                        assignee_user = result.scalar_one_or_none()
+                        if assignee_user:
+                            assignee_id = assignee_user.id
+                
                 task = Task(
                     chat_id=task_data["chat_id"],
-                    creator_id=update.effective_user.id,
+                    author_id=update.effective_user.id,
+                    assignee_id=assignee_id or update.effective_user.id,
                     text=task_data["text"],
-                    status="open",
-                    deadline=deadline
+                    deadline=deadline,
+                    status=TaskStatus.OPEN
                 )
                 session.add(task)
                 await session.commit()
                 
-                deadline_str = deadline.strftime("%d.%m.%Y %H:%M") if deadline else "Без дедлайна"
+                # Get assignee name for display
+                if assignee_id:
+                    result = await session.execute(
+                        select(User).where(User.id == assignee_id)
+                    )
+                    assignee_user = result.scalar_one_or_none()
+                    assignee_display = assignee_user.display_name if assignee_user else task_data.get("assignee_name", "Не назначен")
+                else:
+                    assignee_display = task_data.get("assignee_name", "Не назначен")
+                
+                from utils.formatters import format_date
+                deadline_str = format_date(deadline, include_time=True)
                 
                 await update.message.reply_text(
                     f"✅ Задача создана!\n\n"
                     f"📌 *{escape_markdown(task_data['text'])}*\n"
-                    f"👤 {escape_markdown(task_data.get('assignee_name', 'Не назначен'))}\n"
+                    f"👤 {escape_markdown(assignee_display)}\n"
                     f"📅 {escape_markdown(deadline_str)}",
                     parse_mode="Markdown"
                 )
