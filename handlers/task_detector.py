@@ -180,14 +180,134 @@ async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def force_detect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Force task detection (for testing)."""
-    # Temporarily set counter to trigger analysis
     chat_id = update.effective_chat.id
-    context.bot_data[f"task_detector_{chat_id}"] = CHECK_INTERVAL_MESSAGES - 1
     
     await update.message.reply_text("🔍 Анализирую последние сообщения...")
     
-    # Run analysis
-    await analyze_for_tasks(update, context)
+    # Don't analyze if no API key
+    if not settings.openai_api_key:
+        await update.message.reply_text("❌ API ключ не настроен")
+        return
+    
+    # Get recent messages
+    async with get_session() as session:
+        cutoff = datetime.utcnow() - timedelta(hours=1)
+        
+        result = await session.execute(
+            select(Message)
+            .where(
+                Message.chat_id == chat_id,
+                Message.is_bot_command == False,
+                Message.created_at >= cutoff
+            )
+            .order_by(Message.created_at.desc())
+            .limit(15)
+        )
+        messages = list(reversed(result.scalars().all()))
+        
+        if len(messages) < MIN_MESSAGES_FOR_ANALYSIS:
+            await update.message.reply_text(
+                f"📭 Недостаточно сообщений для анализа.\n"
+                f"Найдено: {len(messages)}, нужно минимум: {MIN_MESSAGES_FOR_ANALYSIS}\n\n"
+                "Напишите несколько сообщений в чат и попробуйте снова."
+            )
+            return
+        
+        # Get usernames
+        from database import User
+        user_ids = list(set(m.user_id for m in messages))
+        result = await session.execute(
+            select(User).where(User.id.in_(user_ids))
+        )
+        users = {u.id: u for u in result.scalars().all()}
+    
+    # Format messages
+    formatted = []
+    for msg in messages[-MAX_MESSAGES_TO_ANALYZE:]:
+        user = users.get(msg.user_id)
+        username = user.display_name if user else "?"
+        text = msg.text[:150] + "..." if len(msg.text) > 150 else msg.text
+        formatted.append(f"{username}: {text}")
+    
+    messages_text = "\n".join(formatted)
+    
+    # Call LLM
+    try:
+        client = get_client()
+        
+        response = await client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {"role": "user", "content": DETECTION_PROMPT.format(messages=messages_text)}
+            ],
+            max_tokens=100,
+            temperature=0.2,
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        # Check if task was detected
+        if "НЕТ" in result_text.upper() or "ЗАДАЧА" not in result_text.upper():
+            await update.message.reply_text("✅ Задач не обнаружено")
+            return
+        
+        # Parse compact format
+        task_text = ""
+        assignee = ""
+        deadline = ""
+        
+        if "ЗАДАЧА:" in result_text.upper():
+            content = result_text.split(":", 1)[1].strip()
+            parts = [p.strip() for p in content.split("|")]
+            
+            if len(parts) >= 1:
+                task_text = parts[0]
+            if len(parts) >= 2:
+                assignee = parts[1]
+            if len(parts) >= 3:
+                deadline = parts[2]
+        
+        if not task_text:
+            await update.message.reply_text("✅ Задач не обнаружено")
+            return
+        
+        # Build suggestion
+        suggestion = f"💡 Кажется, тут есть задача:\n\n"
+        suggestion += f"📌 *{task_text}*\n"
+        
+        if assignee and assignee.lower() != "не указан":
+            suggestion += f"👤 {assignee}\n"
+        if deadline and deadline.lower() != "не указан":
+            suggestion += f"📅 {deadline}\n"
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "✅ Создать задачу", 
+                    callback_data=f"suggest_task:{hash(task_text) % 10000}"
+                ),
+                InlineKeyboardButton(
+                    "❌ Не надо",
+                    callback_data="suggest_task:dismiss"
+                )
+            ]
+        ])
+        
+        context.bot_data[f"suggested_task_{hash(task_text) % 10000}"] = {
+            "text": task_text,
+            "assignee": assignee if "@" in assignee else "",
+            "deadline": deadline if deadline.lower() != "не указан" else "",
+            "chat_id": chat_id,
+        }
+        
+        await update.message.reply_text(
+            suggestion,
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 
 async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
