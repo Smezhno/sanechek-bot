@@ -1,0 +1,24 @@
+# Telegram Bot
+python-telegram-bot==22.0
+python-telegram-bot[job-queue]==22.0
+
+# Database
+sqlalchemy==2.0.36
+aiosqlite==0.20.0
+greenlet==3.1.1
+
+# LLM for summarization
+openai==1.59.8
+httpx==0.28.1
+
+# Date/time parsing
+python-dateutil==2.9.0
+pytz==2024.2
+
+# Environment
+python-dotenv==1.1.1
+
+# Utilities
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
