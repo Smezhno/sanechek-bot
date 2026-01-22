@@ -144,12 +144,132 @@ async def receive_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("Текст задачи не может быть пустым. Попробуй ещё раз:")
         return States.TASK_TEXT
     
-    context.user_data["task_text"] = text[:settings.max_task_length]
+    chat_id = context.user_data["task_chat_id"]
+    
+    # Try to parse task with LLM
+    parsed = await _smart_parse_task(text, chat_id)
+    
+    context.user_data["task_text"] = parsed["task"][:settings.max_task_length]
+    
+    if parsed.get("assignee_id"):
+        context.user_data["task_assignee_id"] = parsed["assignee_id"]
+        context.user_data["task_assignee_username"] = parsed["assignee_username"]
+        
+        if parsed.get("deadline"):
+            context.user_data["task_deadline"] = parsed["deadline"]
+            return await _create_task(update, context)
+        else:
+            await update.message.reply_text(
+                f"👤 Исполнитель: @{parsed['assignee_username']}\n\n"
+                "Какой дедлайн? (например: завтра, в пятницу, 15.02)"
+            )
+            return States.TASK_DEADLINE
     
     await update.message.reply_text(
         "Кто исполнитель? Укажи ответным сообщением @username"
     )
     return States.TASK_ASSIGNEE
+
+
+async def _smart_parse_task(text: str, chat_id: int) -> dict:
+    """Parse task text using LLM to extract assignee and deadline."""
+    from llm.client import ask_llm
+    
+    result = {
+        "task": text,
+        "assignee_id": None,
+        "assignee_username": None,
+        "assignee_name": None,
+        "deadline": None,
+    }
+    
+    # First check for @username in text
+    username_match = re.search(r"@(\w+)", text)
+    if username_match:
+        username = username_match.group(1)
+        async with get_session() as session:
+            user_result = await session.execute(
+                select(User).where(User.username == username)
+            )
+            user = user_result.scalar_one_or_none()
+            if user:
+                result["assignee_id"] = user.id
+                result["assignee_username"] = username
+                result["task"] = text.replace(f"@{username}", "").strip()
+    
+    # If no @username, try to extract name with LLM
+    if not result["assignee_id"] and (settings.yandex_gpt_api_key or settings.openai_api_key):
+        try:
+            # Get chat members for context
+            async with get_session() as session:
+                members_result = await session.execute(
+                    select(User).join(ChatMember).where(ChatMember.chat_id == chat_id)
+                )
+                members = members_result.scalars().all()
+                
+                if members:
+                    members_list = ", ".join([
+                        f"{m.first_name or ''} {m.last_name or ''} (@{m.username})" 
+                        for m in members if m.username
+                    ])
+                    
+                    prompt = f"""Из текста задачи определи исполнителя и саму задачу.
+
+Участники чата: {members_list}
+
+Текст: "{text}"
+
+Ответь строго в формате:
+ИСПОЛНИТЕЛЬ: @username (или "не указан")
+ЗАДАЧА: текст задачи без имени исполнителя
+
+Если имя похоже на одного из участников (Вася=Василий, Саша=Александр и т.д.), укажи его @username."""
+
+                    response = await ask_llm(
+                        question=prompt,
+                        system_prompt="Ты парсер задач. Отвечай строго в указанном формате.",
+                        max_tokens=100,
+                        temperature=0.1
+                    )
+                    
+                    # Parse response
+                    for line in response.split("\n"):
+                        if "ИСПОЛНИТЕЛЬ:" in line.upper():
+                            match = re.search(r"@(\w+)", line)
+                            if match:
+                                username = match.group(1)
+                                for m in members:
+                                    if m.username and m.username.lower() == username.lower():
+                                        result["assignee_id"] = m.id
+                                        result["assignee_username"] = m.username
+                                        break
+                        elif "ЗАДАЧА:" in line.upper():
+                            task = line.split(":", 1)[1].strip() if ":" in line else ""
+                            if task:
+                                result["task"] = task
+        except Exception:
+            pass  # Fallback to manual input
+    
+    # Try to parse deadline
+    deadline_patterns = [
+        r"(завтра|послезавтра|сегодня)",
+        r"(через\s+\d+\s+(?:час|часа|часов|минут|минуты|дн|день|дней))",
+    ]
+    
+    for pattern in deadline_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                result["deadline"] = parse_deadline(match.group(1))
+                result["task"] = result["task"].replace(match.group(1), "").strip()
+            except DateParseError:
+                pass
+            break
+    
+    # Clean up task text
+    result["task"] = " ".join(result["task"].split())
+    
+    return result
 
 
 async def receive_task_assignee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
