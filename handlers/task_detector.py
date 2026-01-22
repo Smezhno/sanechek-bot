@@ -17,12 +17,21 @@ MIN_MESSAGE_LENGTH = 10  # Ignore very short messages
 MAX_MESSAGES_TO_ANALYZE = 7  # Limit messages for analysis
 
 
-DETECTION_PROMPT = """Есть ли задача в этих сообщениях?
+DETECTION_PROMPT = """Проанализируй сообщения и найди ВСЕ потенциальные задачи.
 
+Признаки задачи:
+- "надо", "нужно", "необходимо" + действие
+- просьба что-то сделать
+- проблема, которую нужно решить
+- "доработать", "исправить", "добавить", "сделать"
+
+Сообщения:
 {messages}
 
-Если да: ЗАДАЧА: <что> | @кто | срок
-Если нет: НЕТ"""
+Если есть задачи, выведи КАЖДУЮ на отдельной строке:
+ЗАДАЧА: <краткое описание>
+
+Если задач нет: НЕТ"""
 
 
 async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -94,72 +103,58 @@ async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     messages_text = "\n".join(formatted)
     
-    # Call LLM with minimal tokens
+    # Call LLM
     try:
         result_text = await ask_llm(
             question=DETECTION_PROMPT.format(messages=messages_text),
-            system_prompt="Ты анализатор задач. Отвечай кратко.",
-            max_tokens=100,
-            temperature=0.2
+            system_prompt="Ты анализатор задач. Находи все потенциальные задачи.",
+            max_tokens=200,
+            temperature=0.3
         )
         
         # Check if task was detected
-        if "НЕТ" in result_text.upper() or "ЗАДАЧА" not in result_text.upper():
+        if "НЕТ" in result_text.upper() and "ЗАДАЧА" not in result_text.upper():
             return
         
-        # Parse compact format: ЗАДАЧА: <что> | @кто | срок
-        task_text = ""
-        assignee = ""
-        deadline = ""
+        # Parse multiple tasks (each line with ЗАДАЧА:)
+        tasks = []
+        for line in result_text.split("\n"):
+            if "ЗАДАЧА:" in line.upper():
+                task_text = line.split(":", 1)[1].strip() if ":" in line else ""
+                if task_text and len(task_text) > 3:
+                    tasks.append(task_text)
         
-        if "ЗАДАЧА:" in result_text.upper():
-            content = result_text.split(":", 1)[1].strip()
-            parts = [p.strip() for p in content.split("|")]
+        if not tasks:
+            return
+        
+        # Build suggestion message for all tasks
+        suggestion = f"💡 Нашёл потенциальные задачи:\n\n"
+        
+        buttons = []
+        for i, task_text in enumerate(tasks[:3]):  # Max 3 tasks
+            suggestion += f"📌 *{task_text}*\n"
+            task_hash = abs(hash(task_text)) % 10000
             
-            if len(parts) >= 1:
-                task_text = parts[0]
-            if len(parts) >= 2:
-                assignee = parts[1]
-            if len(parts) >= 3:
-                deadline = parts[2]
-        
-        if not task_text:
-            return
-        
-        # Build suggestion message
-        suggestion = f"💡 Кажется, тут есть задача:\n\n"
-        suggestion += f"📌 *{task_text}*\n"
-        
-        if assignee and assignee.lower() != "не указан":
-            suggestion += f"👤 {assignee}\n"
-        if deadline and deadline.lower() != "не указан":
-            suggestion += f"📅 {deadline}\n"
-        
-        # Build command for quick task creation
-        task_cmd = f"/task {task_text}"
-        if assignee and "@" in assignee:
-            task_cmd += f" {assignee}"
-        
-        keyboard = InlineKeyboardMarkup([
-            [
+            # Store task data for callback
+            context.bot_data[f"suggested_task_{task_hash}"] = {
+                "text": task_text,
+                "assignee": "",
+                "deadline": "",
+                "chat_id": chat_id,
+            }
+            
+            buttons.append([
                 InlineKeyboardButton(
-                    "✅ Создать задачу", 
-                    callback_data=f"suggest_task:{hash(task_text) % 10000}"
-                ),
-                InlineKeyboardButton(
-                    "❌ Не надо",
-                    callback_data="suggest_task:dismiss"
+                    f"✅ Создать: {task_text[:25]}{'...' if len(task_text) > 25 else ''}", 
+                    callback_data=f"suggest_task:{task_hash}"
                 )
-            ]
+            ])
+        
+        buttons.append([
+            InlineKeyboardButton("❌ Не надо", callback_data="suggest_task:dismiss")
         ])
         
-        # Store task data for callback
-        context.bot_data[f"suggested_task_{hash(task_text) % 10000}"] = {
-            "text": task_text,
-            "assignee": assignee if "@" in assignee else "",
-            "deadline": deadline if deadline.lower() != "не указан" else "",
-            "chat_id": chat_id,
-        }
+        keyboard = InlineKeyboardMarkup(buttons)
         
         await update.message.reply_text(
             suggestion,
@@ -229,64 +224,55 @@ async def force_detect_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         result_text = await ask_llm(
             question=DETECTION_PROMPT.format(messages=messages_text),
-            system_prompt="Ты анализатор задач. Отвечай кратко.",
-            max_tokens=100,
-            temperature=0.2
+            system_prompt="Ты анализатор задач. Находи все потенциальные задачи.",
+            max_tokens=200,
+            temperature=0.3
         )
         
         # Check if task was detected
-        if "НЕТ" in result_text.upper() or "ЗАДАЧА" not in result_text.upper():
+        if "НЕТ" in result_text.upper() and "ЗАДАЧА" not in result_text.upper():
             await update.message.reply_text("✅ Задач не обнаружено")
             return
         
-        # Parse compact format
-        task_text = ""
-        assignee = ""
-        deadline = ""
+        # Parse multiple tasks
+        tasks = []
+        for line in result_text.split("\n"):
+            if "ЗАДАЧА:" in line.upper():
+                task_text = line.split(":", 1)[1].strip() if ":" in line else ""
+                if task_text and len(task_text) > 3:
+                    tasks.append(task_text)
         
-        if "ЗАДАЧА:" in result_text.upper():
-            content = result_text.split(":", 1)[1].strip()
-            parts = [p.strip() for p in content.split("|")]
+        if not tasks:
+            await update.message.reply_text("✅ Задач не обнаружено")
+            return
+        
+        # Build suggestion message
+        suggestion = f"💡 Нашёл потенциальные задачи:\n\n"
+        
+        buttons = []
+        for task_text in tasks[:3]:  # Max 3 tasks
+            suggestion += f"📌 *{task_text}*\n"
+            task_hash = abs(hash(task_text)) % 10000
             
-            if len(parts) >= 1:
-                task_text = parts[0]
-            if len(parts) >= 2:
-                assignee = parts[1]
-            if len(parts) >= 3:
-                deadline = parts[2]
-        
-        if not task_text:
-            await update.message.reply_text("✅ Задач не обнаружено")
-            return
-        
-        # Build suggestion
-        suggestion = f"💡 Кажется, тут есть задача:\n\n"
-        suggestion += f"📌 *{task_text}*\n"
-        
-        if assignee and assignee.lower() != "не указан":
-            suggestion += f"👤 {assignee}\n"
-        if deadline and deadline.lower() != "не указан":
-            suggestion += f"📅 {deadline}\n"
-        
-        keyboard = InlineKeyboardMarkup([
-            [
+            context.bot_data[f"suggested_task_{task_hash}"] = {
+                "text": task_text,
+                "assignee": "",
+                "deadline": "",
+                "chat_id": chat_id,
+            }
+            
+            buttons.append([
                 InlineKeyboardButton(
-                    "✅ Создать задачу", 
-                    callback_data=f"suggest_task:{hash(task_text) % 10000}"
-                ),
-                InlineKeyboardButton(
-                    "❌ Не надо",
-                    callback_data="suggest_task:dismiss"
+                    f"✅ Создать: {task_text[:25]}{'...' if len(task_text) > 25 else ''}", 
+                    callback_data=f"suggest_task:{task_hash}"
                 )
-            ]
+            ])
+        
+        buttons.append([
+            InlineKeyboardButton("❌ Не надо", callback_data="suggest_task:dismiss")
         ])
         
-        context.bot_data[f"suggested_task_{hash(task_text) % 10000}"] = {
-            "text": task_text,
-            "assignee": assignee if "@" in assignee else "",
-            "deadline": deadline if deadline.lower() != "не указан" else "",
-            "chat_id": chat_id,
-        }
+        keyboard = InlineKeyboardMarkup(buttons)
         
         await update.message.reply_text(
             suggestion,
