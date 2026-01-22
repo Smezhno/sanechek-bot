@@ -151,6 +151,27 @@ async def receive_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     context.user_data["task_text"] = parsed["task"][:settings.max_task_length]
     
+    # Check if multiple candidates found
+    if parsed.get("multiple_candidates") and len(parsed["multiple_candidates"]) > 1:
+        candidates = parsed["multiple_candidates"]
+        buttons = []
+        for c in candidates[:5]:  # Max 5 options
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{c['name']} (@{c['username']})",
+                    callback_data=f"task_assignee:{c['id']}:{c['username']}"
+                )
+            ])
+        buttons.append([
+            InlineKeyboardButton("❌ Другой", callback_data="task_assignee:other")
+        ])
+        
+        await update.message.reply_text(
+            f"🤔 Нашёл несколько подходящих людей. Кого имел в виду?",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return States.TASK_ASSIGNEE
+    
     if parsed.get("assignee_id"):
         context.user_data["task_assignee_id"] = parsed["assignee_id"]
         context.user_data["task_assignee_username"] = parsed["assignee_username"]
@@ -220,29 +241,46 @@ async def _smart_parse_task(text: str, chat_id: int) -> dict:
 Текст: "{text}"
 
 Ответь строго в формате:
-ИСПОЛНИТЕЛЬ: @username (или "не указан")
+ИСПОЛНИТЕЛЬ: @username (или "не указан", или "несколько:@user1,@user2" если подходят несколько)
 ЗАДАЧА: текст задачи без имени исполнителя
 
-Если имя похоже на одного из участников (Вася=Василий, Саша=Александр и т.д.), укажи его @username."""
+Если имя похоже на одного из участников (Вася=Василий, Саша=Александр и т.д.), укажи его @username.
+Если подходят несколько участников — перечисли всех через запятую."""
 
                     response = await ask_llm(
                         question=prompt,
                         system_prompt="Ты парсер задач. Отвечай строго в указанном формате.",
-                        max_tokens=100,
+                        max_tokens=150,
                         temperature=0.1
                     )
                     
                     # Parse response
                     for line in response.split("\n"):
                         if "ИСПОЛНИТЕЛЬ:" in line.upper():
-                            match = re.search(r"@(\w+)", line)
-                            if match:
-                                username = match.group(1)
-                                for m in members:
-                                    if m.username and m.username.lower() == username.lower():
-                                        result["assignee_id"] = m.id
-                                        result["assignee_username"] = m.username
-                                        break
+                            # Check for multiple matches
+                            if "несколько" in line.lower() or "," in line:
+                                usernames = re.findall(r"@(\w+)", line)
+                                if len(usernames) > 1:
+                                    # Store candidates for clarification
+                                    result["multiple_candidates"] = []
+                                    for username in usernames:
+                                        for m in members:
+                                            if m.username and m.username.lower() == username.lower():
+                                                result["multiple_candidates"].append({
+                                                    "id": m.id,
+                                                    "username": m.username,
+                                                    "name": f"{m.first_name or ''} {m.last_name or ''}".strip()
+                                                })
+                                                break
+                            else:
+                                match = re.search(r"@(\w+)", line)
+                                if match:
+                                    username = match.group(1)
+                                    for m in members:
+                                        if m.username and m.username.lower() == username.lower():
+                                            result["assignee_id"] = m.id
+                                            result["assignee_username"] = m.username
+                                            break
                         elif "ЗАДАЧА:" in line.upper():
                             task = line.split(":", 1)[1].strip() if ":" in line else ""
                             if task:
@@ -316,6 +354,38 @@ async def receive_task_assignee(update: Update, context: ContextTypes.DEFAULT_TY
         "Какой дедлайн? Укажи ответным сообщением (например: завтра, в пятницу, 15.02)"
     )
     return States.TASK_DEADLINE
+
+
+async def task_assignee_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle assignee selection from inline keyboard."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data.split(":")
+    action = data[1] if len(data) > 1 else ""
+    
+    if action == "other":
+        await query.edit_message_text(
+            "Кто исполнитель? Укажи ответным сообщением @username"
+        )
+        return States.TASK_ASSIGNEE
+    
+    # Parse assignee_id and username
+    try:
+        assignee_id = int(data[1])
+        assignee_username = data[2] if len(data) > 2 else ""
+        
+        context.user_data["task_assignee_id"] = assignee_id
+        context.user_data["task_assignee_username"] = assignee_username
+        
+        await query.edit_message_text(
+            f"👤 Исполнитель: @{assignee_username}\n\n"
+            "Какой дедлайн? (например: завтра, в пятницу, 15.02)"
+        )
+        return States.TASK_DEADLINE
+    except (ValueError, IndexError):
+        await query.edit_message_text("Ошибка. Попробуй снова: /task")
+        return ConversationHandler.END
 
 
 async def receive_task_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -916,6 +986,7 @@ def get_task_conversation_handler() -> ConversationHandler:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_task_text)
             ],
             States.TASK_ASSIGNEE: [
+                CallbackQueryHandler(task_assignee_callback, pattern=r"^task_assignee:"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_task_assignee)
             ],
             States.TASK_DEADLINE: [
