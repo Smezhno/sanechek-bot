@@ -55,7 +55,7 @@ def setup_handlers(app: Application) -> None:
     )
     from handlers.ask import ask_handler, reply_to_bot_handler
     from handlers.sarcasm import sarcasm_handler
-    from handlers.task_detector import analyze_for_tasks, suggest_task_callback, force_detect_handler
+    from handlers.task_detector import analyze_for_tasks, suggest_task_callback, force_detect_handler, handle_task_details
     
     # Basic commands
     app.add_handler(CommandHandler("start", start_handler))
@@ -100,6 +100,12 @@ def setup_handlers(app: Application) -> None:
         filters.TEXT & filters.REPLY & ~filters.COMMAND,
         reply_to_bot_handler
     ))
+    
+    # Handle task details input (assignee/deadline for suggested tasks)
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
+        handle_task_details
+    ), group=0)
     
     # Callback query handlers
     app.add_handler(CallbackQueryHandler(task_callback_handler, pattern=r"^task:"))

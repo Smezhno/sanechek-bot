@@ -17,7 +17,7 @@ MIN_MESSAGE_LENGTH = 10  # Ignore very short messages
 MAX_MESSAGES_TO_ANALYZE = 7  # Limit messages for analysis
 
 
-DETECTION_PROMPT = """Проанализируй сообщения и найди ВСЕ потенциальные задачи.
+DETECTION_PROMPT = """Проанализируй сообщения и найди потенциальные задачи.
 
 Признаки задачи:
 - "надо", "нужно", "необходимо" + действие
@@ -28,8 +28,9 @@ DETECTION_PROMPT = """Проанализируй сообщения и найд�
 Сообщения:
 {messages}
 
-Если есть задачи, выведи КАЖДУЮ на отдельной строке:
-ЗАДАЧА: <краткое описание>
+Для каждой найденной задачи:
+1. Перефразируй её чётко и кратко (как task в Jira)
+2. Выведи в формате: ЗАДАЧА: <чёткая формулировка>
 
 Если задач нет: НЕТ"""
 
@@ -296,22 +297,167 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("👍 Окей, не буду")
         return
     
-    # Get stored task data
+    if action == "self":
+        # Assign to self
+        task_hash = data[2] if len(data) > 2 else None
+        task_data = context.bot_data.get(f"suggested_task_{task_hash}")
+        if not task_data:
+            await query.edit_message_text("⏰ Предложение устарело")
+            return
+        
+        task_data["assignee_id"] = query.from_user.id
+        task_data["assignee_name"] = query.from_user.first_name
+        
+        await query.edit_message_text(
+            f"📌 *{task_data['text']}*\n"
+            f"👤 {query.from_user.first_name}\n\n"
+            f"⏰ Когда дедлайн?\n"
+            f"Ответь сообщением (например: завтра, через 3 дня)",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
+            ])
+        )
+        context.user_data["waiting_deadline_for"] = task_hash
+        return
+    
+    if action == "skip_assignee":
+        # Skip assignee, ask for deadline
+        task_hash = data[2] if len(data) > 2 else None
+        task_data = context.bot_data.get(f"suggested_task_{task_hash}")
+        if not task_data:
+            await query.edit_message_text("⏰ Предложение устарело")
+            return
+        
+        await query.edit_message_text(
+            f"📌 *{task_data['text']}*\n\n"
+            f"⏰ Когда дедлайн?\n"
+            f"Ответь сообщением (например: завтра, через 3 дня, в пятницу)\n"
+            f"Или нажми кнопку:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
+            ])
+        )
+        context.user_data["waiting_deadline_for"] = task_hash
+        return
+    
+    if action == "create_now":
+        # Create task without deadline
+        task_hash = data[2] if len(data) > 2 else None
+        task_data = context.bot_data.get(f"suggested_task_{task_hash}")
+        if not task_data:
+            await query.edit_message_text("⏰ Предложение устарело")
+            return
+        
+        # Create the task
+        from database import get_session, Task, User
+        async with get_session() as session:
+            task = Task(
+                chat_id=task_data["chat_id"],
+                creator_id=query.from_user.id,
+                assignee_id=task_data.get("assignee_id"),
+                text=task_data["text"],
+                status="open"
+            )
+            session.add(task)
+            await session.commit()
+            
+            await query.edit_message_text(
+                f"✅ Задача создана!\n\n"
+                f"📌 *{task_data['text']}*\n"
+                f"👤 {task_data.get('assignee_name', 'Не назначен')}\n"
+                f"📅 Без дедлайна",
+                parse_mode="Markdown"
+            )
+        return
+    
+    # First click - ask for assignee
     task_data = context.bot_data.get(f"suggested_task_{action}")
     
     if not task_data:
         await query.edit_message_text("⏰ Предложение устарело")
         return
     
-    # Build instruction
-    cmd = f"/task {task_data['text']}"
-    if task_data['assignee']:
-        cmd += f" {task_data['assignee']}"
-    if task_data['deadline']:
-        cmd += f" {task_data['deadline']}"
-    
     await query.edit_message_text(
-        f"👍 Отправь команду:\n\n`{cmd}`",
-        parse_mode="Markdown"
+        f"📌 *{task_data['text']}*\n\n"
+        f"👤 Кто исполнитель?\n"
+        f"Ответь сообщением с @username или нажми кнопку:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("👤 Я сам", callback_data=f"suggest_task:self:{action}")],
+            [InlineKeyboardButton("⏭ Пропустить", callback_data=f"suggest_task:skip_assignee:{action}")]
+        ])
     )
+    context.user_data["waiting_assignee_for"] = action
+
+
+async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle assignee/deadline input for suggested tasks."""
+    if not update.message or not update.message.text:
+        return
+    
+    text = update.message.text.strip()
+    
+    # Check if waiting for assignee
+    task_hash = context.user_data.get("waiting_assignee_for")
+    if task_hash:
+        task_data = context.bot_data.get(f"suggested_task_{task_hash}")
+        if task_data:
+            # Extract @username
+            if "@" in text:
+                import re
+                match = re.search(r"@(\w+)", text)
+                if match:
+                    task_data["assignee_name"] = f"@{match.group(1)}"
+            else:
+                task_data["assignee_name"] = text
+            
+            del context.user_data["waiting_assignee_for"]
+            
+            # Ask for deadline
+            await update.message.reply_text(
+                f"👍 Исполнитель: {task_data['assignee_name']}\n\n"
+                f"⏰ Когда дедлайн?\n"
+                f"(например: завтра, через 3 дня, в пятницу)",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
+                ])
+            )
+            context.user_data["waiting_deadline_for"] = task_hash
+        return
+    
+    # Check if waiting for deadline
+    task_hash = context.user_data.get("waiting_deadline_for")
+    if task_hash:
+        task_data = context.bot_data.get(f"suggested_task_{task_hash}")
+        if task_data:
+            from utils.date_parser import parse_datetime
+            deadline = parse_datetime(text)
+            
+            del context.user_data["waiting_deadline_for"]
+            
+            # Create the task
+            from database import get_session, Task
+            async with get_session() as session:
+                task = Task(
+                    chat_id=task_data["chat_id"],
+                    creator_id=update.effective_user.id,
+                    text=task_data["text"],
+                    status="open",
+                    deadline=deadline
+                )
+                session.add(task)
+                await session.commit()
+                
+                deadline_str = deadline.strftime("%d.%m.%Y %H:%M") if deadline else "Без дедлайна"
+                
+                await update.message.reply_text(
+                    f"✅ Задача создана!\n\n"
+                    f"📌 *{task_data['text']}*\n"
+                    f"👤 {task_data.get('assignee_name', 'Не назначен')}\n"
+                    f"📅 {deadline_str}",
+                    parse_mode="Markdown"
+                )
+        return
 
