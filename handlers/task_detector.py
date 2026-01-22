@@ -37,7 +37,8 @@ DETECTION_PROMPT = """Проанализируй сообщения и найд�
 
 Для каждой найденной задачи:
 1. Перефразируй её чётко и кратко (как task в Jira)
-2. Выведи в формате: ЗАДАЧА: <чёткая формулировка>
+2. Если в сообщении указан исполнитель (@username или имя), извлеки его
+3. Выведи в формате: ЗАДАЧА: <чёткая формулировка> | ИСПОЛНИТЕЛЬ: <@username или имя, или "не указан">
 
 Если задач нет: НЕТ"""
 
@@ -128,9 +129,20 @@ async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         tasks = []
         for line in result_text.split("\n"):
             if "ЗАДАЧА:" in line.upper():
-                task_text = line.split(":", 1)[1].strip() if ":" in line else ""
+                # Parse format: ЗАДАЧА: текст | ИСПОЛНИТЕЛЬ: @username
+                parts = line.split("|")
+                task_text = parts[0].split(":", 1)[1].strip() if ":" in parts[0] else ""
+                assignee = ""
+                if len(parts) > 1 and "ИСПОЛНИТЕЛЬ:" in parts[1].upper():
+                    assignee = parts[1].split(":", 1)[1].strip() if ":" in parts[1] else ""
+                    if assignee.lower() in ["не указан", "не указано", ""]:
+                        assignee = ""
+                
                 if task_text and len(task_text) > 3:
-                    tasks.append(task_text)
+                    tasks.append({
+                        "text": task_text,
+                        "assignee": assignee
+                    })
         
         if not tasks:
             return
@@ -139,14 +151,18 @@ async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         suggestion = f"💡 Нашёл потенциальные задачи:\n\n"
         
         buttons = []
-        for i, task_text in enumerate(tasks[:3]):  # Max 3 tasks
-            suggestion += f"📌 *{task_text}*\n"
+        for i, task in enumerate(tasks[:3]):  # Max 3 tasks
+            task_text = task["text"] if isinstance(task, dict) else task
+            assignee = task.get("assignee", "") if isinstance(task, dict) else ""
+            
+            assignee_text = f" 👤 {assignee}" if assignee else ""
+            suggestion += f"📌 *{task_text}*{assignee_text}\n"
             task_hash = abs(hash(task_text)) % 10000
             
             # Store task data for callback
             context.bot_data[f"suggested_task_{task_hash}"] = {
                 "text": task_text,
-                "assignee": "",
+                "assignee": assignee,
                 "deadline": "",
                 "chat_id": chat_id,
             }
@@ -246,9 +262,20 @@ async def force_detect_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         tasks = []
         for line in result_text.split("\n"):
             if "ЗАДАЧА:" in line.upper():
-                task_text = line.split(":", 1)[1].strip() if ":" in line else ""
+                # Parse format: ЗАДАЧА: текст | ИСПОЛНИТЕЛЬ: @username
+                parts = line.split("|")
+                task_text = parts[0].split(":", 1)[1].strip() if ":" in parts[0] else ""
+                assignee = ""
+                if len(parts) > 1 and "ИСПОЛНИТЕЛЬ:" in parts[1].upper():
+                    assignee = parts[1].split(":", 1)[1].strip() if ":" in parts[1] else ""
+                    if assignee.lower() in ["не указан", "не указано", ""]:
+                        assignee = ""
+                
                 if task_text and len(task_text) > 3:
-                    tasks.append(task_text)
+                    tasks.append({
+                        "text": task_text,
+                        "assignee": assignee
+                    })
         
         if not tasks:
             await update.message.reply_text("✅ Задач не обнаружено")
@@ -258,13 +285,17 @@ async def force_detect_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         suggestion = f"💡 Нашёл потенциальные задачи:\n\n"
         
         buttons = []
-        for task_text in tasks[:3]:  # Max 3 tasks
-            suggestion += f"📌 *{task_text}*\n"
+        for task in tasks[:3]:  # Max 3 tasks
+            task_text = task["text"] if isinstance(task, dict) else task
+            assignee = task.get("assignee", "") if isinstance(task, dict) else ""
+            
+            assignee_text = f" 👤 {assignee}" if assignee else ""
+            suggestion += f"📌 *{task_text}*{assignee_text}\n"
             task_hash = abs(hash(task_text)) % 10000
             
             context.bot_data[f"suggested_task_{task_hash}"] = {
                 "text": task_text,
-                "assignee": "",
+                "assignee": assignee,
                 "deadline": "",
                 "chat_id": chat_id,
             }
@@ -299,6 +330,41 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     data = query.data.split(":")
     action = data[1]
+    
+    # Handle assignee selection from multiple matches
+    if action == "assignee" and len(data) >= 5:
+        assignee_id = int(data[2])
+        assignee_username = data[3]
+        task_hash = data[4]
+        
+        task_data = context.bot_data.get(f"suggested_task_{task_hash}")
+        if not task_data:
+            await query.edit_message_text("⏰ Предложение устарело")
+            return
+        
+        from database import get_session, User
+        async with get_session() as session:
+            result = await session.execute(
+                select(User).where(User.id == assignee_id)
+            )
+            assignee_user = result.scalar_one_or_none()
+            
+            if assignee_user:
+                task_data["assignee_id"] = assignee_user.id
+                task_data["assignee_name"] = assignee_user.display_name
+                
+                await query.edit_message_text(
+                    f"📌 *{task_data['text']}*\n"
+                    f"👤 {assignee_user.display_name}\n\n"
+                    f"⏰ Когда дедлайн?\n"
+                    f"Ответь сообщением (например: завтра, через 3 дня)",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
+                    ])
+                )
+                context.user_data["waiting_deadline_for"] = task_hash
+        return
     
     if action == "dismiss":
         await query.edit_message_text("👍 Окей, не буду")
@@ -379,13 +445,49 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
             )
         return
     
-    # First click - ask for assignee
+    # First click - check if assignee already extracted
     task_data = context.bot_data.get(f"suggested_task_{action}")
     
     if not task_data:
         await query.edit_message_text("⏰ Предложение устарело")
         return
     
+    # If assignee was extracted from context, try to find user
+    if task_data.get("assignee"):
+        assignee_text = task_data["assignee"]
+        from database import get_session, User
+        from sqlalchemy import select
+        
+        async with get_session() as session:
+            # Try to find by username or name
+            assignee_result = await session.execute(
+                select(User).where(
+                    (User.username == assignee_text.replace('@', '')) |
+                    (User.first_name.ilike(f"%{assignee_text}%")) |
+                    (User.last_name.ilike(f"%{assignee_text}%"))
+                )
+            )
+            assignee_user = assignee_result.scalar_one_or_none()
+            
+            if assignee_user:
+                # Found user, skip to deadline
+                task_data["assignee_id"] = assignee_user.id
+                task_data["assignee_name"] = assignee_user.display_name
+                
+                await query.edit_message_text(
+                    f"📌 *{task_data['text']}*\n"
+                    f"👤 {assignee_user.display_name}\n\n"
+                    f"⏰ Когда дедлайн?\n"
+                    f"Ответь сообщением (например: завтра, через 3 дня)",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{action}")]
+                    ])
+                )
+                context.user_data["waiting_deadline_for"] = action
+                return
+    
+    # No assignee found, ask for it
     await query.edit_message_text(
         f"📌 *{task_data['text']}*\n\n"
         f"👤 Кто исполнитель?\n"
@@ -411,20 +513,98 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     if assignee_hash:
         task_data = context.bot_data.get(f"suggested_task_{assignee_hash}")
         if task_data:
-            # Extract @username
-            if "@" in text:
-                import re
-                match = re.search(r"@(\w+)", text)
-                if match:
-                    task_data["assignee_name"] = f"@{match.group(1)}"
-            else:
-                task_data["assignee_name"] = text
+            chat_id = task_data["chat_id"]
+            from database import get_session, User, ChatMember
+            from sqlalchemy import select
+            import re
+            
+            async with get_session() as session:
+                assignee_user = None
+                
+                # Try to find by @username
+                if "@" in text:
+                    match = re.search(r"@(\w+)", text)
+                    if match:
+                        username = match.group(1)
+                        result = await session.execute(
+                            select(User).where(User.username == username)
+                        )
+                        assignee_user = result.scalar_one_or_none()
+                        
+                        if assignee_user:
+                            # Check if user is in chat
+                            member_result = await session.execute(
+                                select(ChatMember).where(
+                                    ChatMember.user_id == assignee_user.id,
+                                    ChatMember.chat_id == chat_id,
+                                    ChatMember.left_at.is_(None)
+                                )
+                            )
+                            if not member_result.scalar_one_or_none():
+                                assignee_user = None
+                
+                # Try to find by name (fuzzy match)
+                if not assignee_user:
+                    # Get all chat members
+                    members_result = await session.execute(
+                        select(User).join(ChatMember).where(
+                            ChatMember.chat_id == chat_id,
+                            ChatMember.left_at.is_(None)
+                        )
+                    )
+                    members = members_result.scalars().all()
+                    
+                    text_lower = text.lower().strip()
+                    matching = []
+                    
+                    for m in members:
+                        first = (m.first_name or "").lower()
+                        last = (m.last_name or "").lower()
+                        full = f"{first} {last}".strip()
+                        
+                        # Check various matches
+                        if (text_lower == first or 
+                            text_lower == last or 
+                            text_lower == full or
+                            text_lower in first or
+                            first.startswith(text_lower)):
+                            matching.append(m)
+                    
+                    if len(matching) == 1:
+                        assignee_user = matching[0]
+                    elif len(matching) > 1:
+                        # Multiple matches - show buttons
+                        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                        buttons = []
+                        for m in matching[:5]:
+                            name = f"{m.first_name or ''} {m.last_name or ''}".strip()
+                            buttons.append([
+                                InlineKeyboardButton(
+                                    f"{name} (@{m.username})",
+                                    callback_data=f"suggest_task:assignee:{m.id}:{m.username}:{assignee_hash}"
+                                )
+                            ])
+                        
+                        await update.message.reply_text(
+                            f"Найдено несколько совпадений для \"{text}\":\n"
+                            "Выбери исполнителя:",
+                            reply_markup=InlineKeyboardMarkup(buttons)
+                        )
+                        return
+                
+                if assignee_user:
+                    task_data["assignee_id"] = assignee_user.id
+                    task_data["assignee_name"] = assignee_user.display_name
+                else:
+                    # Not found, save as text
+                    task_data["assignee_name"] = text
             
             del context.user_data["waiting_assignee_for"]
             
             # Ask for deadline
+            assignee_display = task_data.get("assignee_name", "Не указан")
             await update.message.reply_text(
-                f"👍 Исполнитель: {task_data['assignee_name']}\n\n"
+                f"👍 Исполнитель: {assignee_display}\n\n"
                 f"⏰ Когда дедлайн?\n"
                 f"(например: завтра, через 3 дня, в пятницу)",
                 reply_markup=InlineKeyboardMarkup([
