@@ -519,6 +519,21 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     text = update.message.text.strip()
     
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"handle_task_details called: text='{text}', waiting_assignee={context.user_data.get('waiting_assignee_for')}, waiting_deadline={context.user_data.get('waiting_deadline_for')}")
+    
+    # Skip if this is a reply to bot asking for time (from /ask handler)
+    if update.message.reply_to_message:
+        reply_to = update.message.reply_to_message
+        if reply_to.from_user and reply_to.from_user.is_bot:
+            reply_text = reply_to.text or ""
+            if any(phrase in reply_text.lower() for phrase in [
+                "когда напомнить", "укажи время", "дата уже прошла"
+            ]):
+                logger.info("Skipping: reply to bot asking for time")
+                return
+    
     # Check if waiting for assignee
     assignee_hash = context.user_data.get("waiting_assignee_for")
     if assignee_hash:
@@ -628,18 +643,27 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Check if waiting for deadline
     deadline_hash = context.user_data.get("waiting_deadline_for")
     if deadline_hash:
+        logger.info(f"Processing deadline input: text='{text}', hash={deadline_hash}")
+        
         task_data = context.bot_data.get(f"suggested_task_{deadline_hash}")
-        if task_data:
+        if not task_data:
+            # Task data expired or not found
+            logger.warning(f"Task data not found for hash {deadline_hash}")
+            await update.message.reply_text("⏰ Предложение устарело. Создай задачу заново: /task")
+            del context.user_data["waiting_deadline_for"]
+            return
             from utils.date_parser import parse_deadline, DateParseError
             from database import get_session, Task, User
             from database.models import TaskStatus
             
             try:
                 deadline = parse_deadline(text)
+                logger.info(f"Parsed deadline: {deadline}")
             except DateParseError as e:
+                logger.warning(f"Date parse error: {e}")
                 await update.message.reply_text(
                     f"❌ Не понял дату: {str(e)}\n\n"
-                    f"Попробуй ещё раз (например: завтра, через 3 дня, в пятницу в 16:00)"
+                    f"Попробуй ещё раз \\(например: завтра, через 3 дня, в пятницу в 16:00\\)"
                 )
                 return
             
@@ -671,6 +695,7 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
                 session.add(task)
                 await session.commit()
+                logger.info(f"Task created: id={task.id}, text='{task.text}', assignee_id={task.assignee_id}, deadline={task.deadline}")
                 
                 # Get assignee name for display
                 if assignee_id:
