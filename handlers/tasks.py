@@ -841,14 +841,18 @@ async def receive_task_deadline(update: Update, context: ContextTypes.DEFAULT_TY
     
     # Check for recurrence patterns FIRST
     recurrence_patterns = {
-        RecurrenceType.DAILY: ["каждый день", "ежедневно"],
-        RecurrenceType.WEEKDAYS: ["по будням", "пн-пт", "будни"],
+        RecurrenceType.DAILY: ["каждый день", "ежедневно", "каждое утро", "по утрам", 
+                              "каждый вечер", "по вечерам", "перед сном", "на ночь",
+                              "утром", "вечером"],
+        RecurrenceType.WEEKDAYS: ["по будням", "пн-пт", "будни", "в рабочие дни", "по рабочим дням"],
         RecurrenceType.WEEKLY: ["каждый понедельник", "каждый вторник", "каждую среду", 
                                "каждый четверг", "каждую пятницу", "каждую субботу",
                                "каждое воскресенье", "еженедельно", "раз в неделю",
                                "по понедельникам", "по вторникам", "по средам",
-                               "по четвергам", "по пятницам", "по субботам", "по воскресеньям"],
-        RecurrenceType.MONTHLY: ["каждый месяц", "ежемесячно", "раз в месяц"],
+                               "по четвергам", "по пятницам", "по субботам", "по воскресеньям",
+                               "каждую неделю"],
+        RecurrenceType.MONTHLY: ["каждый месяц", "ежемесячно", "раз в месяц", 
+                                "в начале месяца", "в конце месяца", "1 числа"],
     }
     
     detected_recurrence = None
@@ -876,16 +880,36 @@ async def receive_task_deadline(update: Update, context: ContextTypes.DEFAULT_TY
                 target_weekday = weekday
                 break
         
+        # Determine time of day
+        default_hour = 12
+        if "утр" in text:  # утро, утром
+            default_hour = 9
+        elif "вечер" in text:
+            default_hour = 19
+        elif "сном" in text or "ночь" in text:
+            default_hour = 22
+        
+        # Parse specific time if provided (e.g., "в 12 часов", "в 15:00")
+        time_match = re.search(r"в\s*(\d{1,2})(?:[:\s](\d{2}))?\s*(?:час|:)?", text)
+        if time_match:
+            default_hour = int(time_match.group(1))
+            if time_match.group(2):
+                default_minute = int(time_match.group(2))
+            else:
+                default_minute = 0
+        else:
+            default_minute = 0
+        
         if target_weekday is not None:
             # Calculate next occurrence of this weekday
             days_ahead = target_weekday - today.weekday()
             if days_ahead <= 0:
                 days_ahead += 7
             next_date = today + timedelta(days=days_ahead)
-            deadline = datetime.combine(next_date, datetime.min.time().replace(hour=12))
+            deadline = datetime.combine(next_date, datetime.min.time().replace(hour=default_hour, minute=default_minute))
         else:
-            # Default: tomorrow at noon
-            deadline = datetime.combine(today + timedelta(days=1), datetime.min.time().replace(hour=12))
+            # Default: tomorrow at the specified time
+            deadline = datetime.combine(today + timedelta(days=1), datetime.min.time().replace(hour=default_hour, minute=default_minute))
         
         context.user_data["task_deadline"] = deadline
         context.user_data["task_recurrence"] = detected_recurrence.value
