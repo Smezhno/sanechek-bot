@@ -400,9 +400,9 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = update.message.text.strip()
     
     # Check if waiting for assignee
-    task_hash = context.user_data.get("waiting_assignee_for")
-    if task_hash:
-        task_data = context.bot_data.get(f"suggested_task_{task_hash}")
+    assignee_hash = context.user_data.get("waiting_assignee_for")
+    if assignee_hash:
+        task_data = context.bot_data.get(f"suggested_task_{assignee_hash}")
         if task_data:
             # Extract @username
             if "@" in text:
@@ -421,16 +421,16 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"⏰ Когда дедлайн?\n"
                 f"(например: завтра, через 3 дня, в пятницу)",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
+                    [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{assignee_hash}")]
                 ])
             )
-            context.user_data["waiting_deadline_for"] = task_hash
+            context.user_data["waiting_deadline_for"] = assignee_hash
         return
     
     # Check if waiting for deadline
-    task_hash = context.user_data.get("waiting_deadline_for")
-    if task_hash:
-        task_data = context.bot_data.get(f"suggested_task_{task_hash}")
+    deadline_hash = context.user_data.get("waiting_deadline_for")
+    if deadline_hash:
+        task_data = context.bot_data.get(f"suggested_task_{deadline_hash}")
         if task_data:
             from utils.date_parser import parse_datetime
             deadline = parse_datetime(text)

@@ -110,6 +110,10 @@ async def reply_to_bot_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not update.message or not update.message.text:
         return
     
+    # Skip if waiting for task details
+    if context.user_data.get("waiting_assignee_for") or context.user_data.get("waiting_deadline_for"):
+        return
+    
     # Check if this is a reply to bot's message
     if not update.message.reply_to_message:
         return
