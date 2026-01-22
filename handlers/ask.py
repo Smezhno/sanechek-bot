@@ -109,32 +109,39 @@ async def reply_to_bot_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     """Handle replies to bot messages - treat as questions."""
     if not update.message or not update.message.text:
         return
-    
+
     # Skip if waiting for task details
     if context.user_data.get("waiting_assignee_for") or context.user_data.get("waiting_deadline_for"):
         return
-    
+
     # Check if this is a reply to bot's message
     if not update.message.reply_to_message:
         return
-    
+
     reply_to = update.message.reply_to_message
     if not reply_to.from_user or not reply_to.from_user.is_bot:
         return
-    
+
     # Check if it's our bot
     if reply_to.from_user.id != context.bot.id:
         return
-    
+
+    # Skip if bot was asking for time/reminder details
+    reply_to_text = reply_to.text.lower() if reply_to.text else ""
+    if any(phrase in reply_to_text for phrase in [
+        "когда напомнить", "укажи время", "дата уже прошла", "укажи дату"
+    ]):
+        return
+
     # Skip commands
     text = update.message.text
     if text.startswith("/"):
         return
-    
+
     # Skip very short messages (likely just reactions)
     if len(text) < 5:
         return
-    
+
     # Process as question
     await _process_question(update, context, text)
 

@@ -79,8 +79,8 @@ async def _summarize_chat(
         today = datetime.utcnow().strftime("%d.%m.%Y")
         response = f"📊 Саммари за {today}:\n\n{summary}"
         response = truncate_summary(response)
-        
-        await update.message.reply_text(response)
+
+        await update.message.reply_text(response, parse_mode="Markdown")
 
 
 async def _summarize_subscribed_chats(
@@ -179,8 +179,8 @@ async def _summarize_subscribed_chats(
         
         response = "\n".join(lines)
         response = truncate_summary(response)
-        
-        await update.message.reply_text(response)
+
+        await update.message.reply_text(response, parse_mode="Markdown")
 
 
 async def subscribe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -434,7 +434,8 @@ async def send_daily_summaries(context: ContextTypes.DEFAULT_TYPE) -> None:
                 try:
                     await context.bot.send_message(
                         chat_id=user_id,
-                        text=response
+                        text=response,
+                        parse_mode="Markdown"
                     )
                 except Exception:
                     # User might have blocked the bot

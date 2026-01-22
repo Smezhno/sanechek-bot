@@ -62,20 +62,28 @@ async def sarcasm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Handle messages that deserve a sarcastic response."""
     if not update.message or not update.message.text:
         return
-    
+
     # Only in groups
     if update.effective_chat.type == "private":
         return
-    
+
     text = update.message.text.lower()
-    
+
+    # Skip messages that mention @bot (likely commands or reminders)
+    if f"@{settings.bot_username.lower()}" in text:
+        return
+
+    # Skip messages with @username mentions (likely addressing someone)
+    if re.search(r"@\w+", text):
+        return
+
     # Check if message matches any trigger
     triggered = False
     for pattern in TRIGGER_PATTERNS:
         if re.search(pattern, text, re.IGNORECASE):
             triggered = True
             break
-    
+
     if not triggered:
         return
     
