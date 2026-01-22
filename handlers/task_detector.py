@@ -11,34 +11,28 @@ from config import settings
 
 
 # How often to check (not every message to save API calls)
-CHECK_INTERVAL_MESSAGES = 10  # Check every N messages
-MIN_MESSAGES_FOR_ANALYSIS = 5  # Minimum messages to analyze
+CHECK_INTERVAL_MESSAGES = 20  # Check every N messages (increased to save tokens)
+MIN_MESSAGES_FOR_ANALYSIS = 3  # Minimum messages to analyze
+MIN_MESSAGE_LENGTH = 10  # Ignore very short messages
+MAX_MESSAGES_TO_ANALYZE = 7  # Limit messages for analysis
 
 
-DETECTION_PROMPT = """Проанализируй последние сообщения из рабочего чата и определи, есть ли там задача, которую стоит зафиксировать.
+DETECTION_PROMPT = """Есть ли задача в этих сообщениях?
 
-Признаки задачи:
-- Кто-то просит что-то сделать
-- Есть договорённость о действии
-- Упоминается дедлайн или срок
-- Кто-то берёт на себя обязательство
-
-Сообщения:
 {messages}
 
-Если есть потенциальная задача, ответь в формате:
-ЗАДАЧА: <краткое описание задачи>
-ИСПОЛНИТЕЛЬ: <@username или "не указан">
-СРОК: <срок или "не указан">
-
-Если задачи нет, ответь только: НЕТ
-
-Отвечай кратко, без лишних объяснений."""
+Если да: ЗАДАЧА: <что> | @кто | срок
+Если нет: НЕТ"""
 
 
 async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Analyze recent messages for potential tasks."""
+    # Skip if no text message (images, videos, stickers, etc.)
     if not update.message or not update.message.text:
+        return
+    
+    # Skip very short messages
+    if len(update.message.text) < MIN_MESSAGE_LENGTH:
         return
     
     # Only in groups
@@ -89,16 +83,18 @@ async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         users = {u.id: u for u in result.scalars().all()}
     
-    # Format messages
+    # Format messages (limit length to save tokens)
     formatted = []
-    for msg in messages[-10:]:  # Last 10 messages
+    for msg in messages[-MAX_MESSAGES_TO_ANALYZE:]:
         user = users.get(msg.user_id)
-        username = user.display_name if user else "Unknown"
-        formatted.append(f"{username}: {msg.text}")
+        username = user.display_name if user else "?"
+        # Truncate long messages
+        text = msg.text[:150] + "..." if len(msg.text) > 150 else msg.text
+        formatted.append(f"{username}: {text}")
     
     messages_text = "\n".join(formatted)
     
-    # Call LLM
+    # Call LLM with minimal tokens
     try:
         client = get_client()
         
@@ -107,33 +103,31 @@ async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             messages=[
                 {"role": "user", "content": DETECTION_PROMPT.format(messages=messages_text)}
             ],
-            max_tokens=200,
-            temperature=0.3,
+            max_tokens=100,  # Reduced from 200
+            temperature=0.2,
         )
         
         result_text = response.choices[0].message.content.strip()
         
         # Check if task was detected
-        if result_text.upper().startswith("НЕТ"):
+        if "НЕТ" in result_text.upper() or "ЗАДАЧА" not in result_text.upper():
             return
         
-        if "ЗАДАЧА:" not in result_text.upper():
-            return
-        
-        # Parse result
-        lines = result_text.split("\n")
+        # Parse compact format: ЗАДАЧА: <что> | @кто | срок
         task_text = ""
         assignee = ""
         deadline = ""
         
-        for line in lines:
-            line_upper = line.upper()
-            if line_upper.startswith("ЗАДАЧА:"):
-                task_text = line.split(":", 1)[1].strip()
-            elif line_upper.startswith("ИСПОЛНИТЕЛЬ:"):
-                assignee = line.split(":", 1)[1].strip()
-            elif line_upper.startswith("СРОК:"):
-                deadline = line.split(":", 1)[1].strip()
+        if "ЗАДАЧА:" in result_text.upper():
+            content = result_text.split(":", 1)[1].strip()
+            parts = [p.strip() for p in content.split("|")]
+            
+            if len(parts) >= 1:
+                task_text = parts[0]
+            if len(parts) >= 2:
+                assignee = parts[1]
+            if len(parts) >= 3:
+                deadline = parts[2]
         
         if not task_text:
             return
