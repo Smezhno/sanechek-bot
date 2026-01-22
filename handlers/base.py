@@ -55,6 +55,7 @@ def setup_handlers(app: Application) -> None:
     )
     from handlers.ask import ask_handler, reply_to_bot_handler
     from handlers.sarcasm import sarcasm_handler
+    from handlers.task_detector import analyze_for_tasks, suggest_task_callback
     
     # Basic commands
     app.add_handler(CommandHandler("start", start_handler))
@@ -101,6 +102,7 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(task_callback_handler, pattern=r"^task:"))
     app.add_handler(CallbackQueryHandler(reminder_callback_handler, pattern=r"^reminder:"))
     app.add_handler(CallbackQueryHandler(subscribe_callback_handler, pattern=r"^subscribe:"))
+    app.add_handler(CallbackQueryHandler(suggest_task_callback, pattern=r"^suggest_task:"))
     
     # Chat member updates
     app.add_handler(MessageHandler(
@@ -118,11 +120,17 @@ def setup_handlers(app: Application) -> None:
         sarcasm_handler
     ), group=1)
     
-    # Store messages for summarization (should be last, group 2)
+    # Store messages for summarization (group 2)
     app.add_handler(MessageHandler(
         filters.TEXT & filters.ChatType.GROUPS,
         handle_message
     ), group=2)
+    
+    # Task detection from context (group 3, runs after message is stored)
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
+        analyze_for_tasks
+    ), group=3)
 
 
 
