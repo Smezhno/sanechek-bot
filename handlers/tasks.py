@@ -432,13 +432,25 @@ async def _smart_parse_task(text: str, chat_id: int, author_id: int = None) -> d
             "на ночь": (RecurrenceType.DAILY, 22),
         }
         
-        for pattern, (recurrence, hour) in time_patterns.items():
+        for pattern, (recurrence, default_hour) in time_patterns.items():
             if pattern in text_lower:
                 result["recurrence"] = recurrence
                 result["task"] = re.sub(rf"(?i){pattern}", "", result["task"]).strip()
+                
+                # Parse specific time if provided (e.g., "в 23:00", "в 12 часов")
+                hour = default_hour
+                minute = 0
+                time_match = re.search(r"в\s*(\d{1,2})(?:[:\s](\d{2}))?\s*(?:час|:|\s|$)", text_lower)
+                if time_match:
+                    hour = int(time_match.group(1))
+                    if time_match.group(2):
+                        minute = int(time_match.group(2))
+                    # Remove time from task text
+                    result["task"] = re.sub(r"(?i)в\s*\d{1,2}(?:[:\s]\d{2})?\s*(?:час(?:ов|а)?|:|\s|$)", "", result["task"]).strip()
+                
                 from datetime import date
                 tomorrow = date.today() + timedelta(days=1)
-                result["deadline"] = datetime.combine(tomorrow, datetime.min.time().replace(hour=hour))
+                result["deadline"] = datetime.combine(tomorrow, datetime.min.time().replace(hour=hour, minute=minute))
                 break
         
         # Regular recurrence patterns (if not matched above)
@@ -592,6 +604,11 @@ async def _smart_parse_task(text: str, chat_id: int, author_id: int = None) -> d
             except DateParseError:
                 pass
             break
+    
+    # Heuristic: Recurring tasks without an assignee are self-tasks
+    # (e.g., "пить таблетки каждый вечер" → for myself)
+    if result["recurrence"] and not result["is_self"] and not result["assignee_id"]:
+        result["is_self"] = True
     
     # Clean up task text
     result["task"] = " ".join(result["task"].split())
