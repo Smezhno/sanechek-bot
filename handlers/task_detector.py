@@ -673,6 +673,7 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
         from utils.date_parser import parse_deadline, DateParseError
         from database import get_session, Task, User
         from database.models import TaskStatus
+        from sqlalchemy import select
         
         try:
             deadline = parse_deadline(text)
