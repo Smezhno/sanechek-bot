@@ -17,6 +17,15 @@ class TaskStatus(str, Enum):
     CLOSED = "closed"
 
 
+class RecurrenceType(str, Enum):
+    """Task recurrence type."""
+    NONE = "none"
+    DAILY = "daily"           # Каждый день
+    WEEKDAYS = "weekdays"     # Пн-Пт
+    WEEKLY = "weekly"         # Каждую неделю (тот же день)
+    MONTHLY = "monthly"       # Каждый месяц (та же дата)
+
+
 class ReminderStatus(str, Enum):
     """Reminder status enum."""
     PENDING = "pending"
@@ -119,6 +128,12 @@ class Task(Base):
     # Message IDs for tracking (for /done reply)
     command_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     confirmation_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    
+    # Recurrence
+    recurrence: Mapped[RecurrenceType] = mapped_column(
+        SQLEnum(RecurrenceType), default=RecurrenceType.NONE
+    )
+    parent_task_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("tasks.id"), nullable=True)
     
     # Relationships
     chat: Mapped["Chat"] = relationship("Chat", back_populates="tasks")

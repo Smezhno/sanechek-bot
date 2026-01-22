@@ -15,6 +15,7 @@ class States:
     TASK_TEXT = 1
     TASK_ASSIGNEE = 2
     TASK_DEADLINE = 3
+    TASK_RECURRENCE = 4
     
     # Task editing
     EDIT_FIELD = 10

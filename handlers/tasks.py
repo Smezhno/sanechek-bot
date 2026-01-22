@@ -1,7 +1,8 @@
 """Task management handlers."""
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
+from dateutil.relativedelta import relativedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -534,14 +535,58 @@ async def receive_task_deadline(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         deadline = parse_deadline(text)
         context.user_data["task_deadline"] = deadline
-        return await _create_task(update, context)
+        
+        # Ask about recurrence
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Каждый день", callback_data="recurrence:daily")],
+            [InlineKeyboardButton("📅 Пн-Пт", callback_data="recurrence:weekdays")],
+            [InlineKeyboardButton("📆 Каждую неделю", callback_data="recurrence:weekly")],
+            [InlineKeyboardButton("🗓️ Каждый месяц", callback_data="recurrence:monthly")],
+            [InlineKeyboardButton("➡️ Без повтора", callback_data="recurrence:none")],
+        ])
+        
+        await update.message.reply_text(
+            "🔄 Повторять задачу?",
+            reply_markup=keyboard
+        )
+        return States.TASK_RECURRENCE
+        
     except DateParseError as e:
         await update.message.reply_text(str(e))
         return States.TASK_DEADLINE
 
 
+async def recurrence_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle recurrence selection."""
+    query = update.callback_query
+    await query.answer()
+    
+    recurrence = query.data.split(":")[1]
+    context.user_data["task_recurrence"] = recurrence
+    
+    await query.edit_message_text(
+        f"🔄 Повтор: {_get_recurrence_label(recurrence)}"
+    )
+    
+    return await _create_task(update, context)
+
+
+def _get_recurrence_label(recurrence: str) -> str:
+    """Get human-readable recurrence label."""
+    labels = {
+        "none": "без повтора",
+        "daily": "каждый день",
+        "weekdays": "Пн-Пт",
+        "weekly": "каждую неделю",
+        "monthly": "каждый месяц",
+    }
+    return labels.get(recurrence, recurrence)
+
+
 async def _create_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Create the task after all data is collected."""
+    from database.models import RecurrenceType
+    
     chat_id = context.user_data["task_chat_id"]
     author_id = context.user_data["task_author_id"]
     text = context.user_data["task_text"]
@@ -549,6 +594,17 @@ async def _create_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     assignee_username = context.user_data.get("task_assignee_username")
     assignee_id = context.user_data.get("task_assignee_id")
     command_message_id = context.user_data.get("task_command_message_id")
+    recurrence_str = context.user_data.get("task_recurrence", "none")
+    
+    # Map string to enum
+    recurrence_map = {
+        "none": RecurrenceType.NONE,
+        "daily": RecurrenceType.DAILY,
+        "weekdays": RecurrenceType.WEEKDAYS,
+        "weekly": RecurrenceType.WEEKLY,
+        "monthly": RecurrenceType.MONTHLY,
+    }
+    recurrence = recurrence_map.get(recurrence_str, RecurrenceType.NONE)
     
     async with get_session() as session:
         # Get assignee if we only have username
@@ -561,9 +617,15 @@ async def _create_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 assignee_id = assignee.id
         
         if not assignee_id:
-            await update.message.reply_text(
-                "Не удалось найти исполнителя. Попробуй создать задачу заново."
-            )
+            # Try to send message (could be callback or message)
+            if update.callback_query:
+                await update.callback_query.edit_message_text(
+                    "Не удалось найти исполнителя. Попробуй создать задачу заново."
+                )
+            else:
+                await update.message.reply_text(
+                    "Не удалось найти исполнителя. Попробуй создать задачу заново."
+                )
             context.user_data.clear()
             return ConversationHandler.END
         
@@ -575,6 +637,7 @@ async def _create_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             text=text,
             deadline=deadline,
             command_message_id=command_message_id,
+            recurrence=recurrence,
         )
         session.add(task)
         await session.flush()
@@ -584,13 +647,23 @@ async def _create_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         assignee = result.scalar_one()
         
         deadline_str = format_date(deadline)
+        recurrence_str = ""
+        if recurrence != RecurrenceType.NONE:
+            recurrence_str = f"\n🔄 Повтор: {_get_recurrence_label(recurrence.value)}"
+        
         confirmation = (
             f'✅ Задача создана: "{text}"\n'
             f"Исполнитель: {assignee.display_name}\n"
             f"Дедлайн: {deadline_str}"
+            f"{recurrence_str}"
         )
         
-        reply = await update.message.reply_text(confirmation)
+        # Send confirmation (could be from callback or message)
+        if update.callback_query:
+            await update.callback_query.edit_message_text(confirmation)
+            reply = await context.bot.send_message(chat_id, "📌 Задача добавлена!")
+        else:
+            reply = await update.message.reply_text(confirmation)
         
         # Save confirmation message ID
         task.confirmation_message_id = reply.message_id
@@ -818,13 +891,59 @@ async def done_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         task.closed_at = datetime.utcnow()
         task.closed_by = user_id
         
+        # Create next recurring task if needed
+        next_task = await _create_next_recurring_task(session, task)
+        
         # Get user who closed
         result = await session.execute(select(User).where(User.id == user_id))
         closer = result.scalar_one()
         
-        await update.message.reply_text(
-            f'✅ {closer.display_name} закрыл задачу "{task.text}"'
-        )
+        msg = f'✅ {closer.display_name} закрыл задачу "{task.text}"'
+        if next_task:
+            msg += f"\n🔄 Следующая: {format_date(next_task.deadline)}"
+        
+        await update.message.reply_text(msg)
+
+
+async def _create_next_recurring_task(session, task: Task) -> Optional[Task]:
+    """Create next instance of a recurring task."""
+    from database.models import RecurrenceType
+    from dateutil.relativedelta import relativedelta
+    
+    if task.recurrence == RecurrenceType.NONE:
+        return None
+    
+    # Calculate next deadline
+    current_deadline = task.deadline
+    
+    if task.recurrence == RecurrenceType.DAILY:
+        next_deadline = current_deadline + timedelta(days=1)
+    elif task.recurrence == RecurrenceType.WEEKDAYS:
+        next_deadline = current_deadline + timedelta(days=1)
+        # Skip weekends
+        while next_deadline.weekday() >= 5:  # Saturday=5, Sunday=6
+            next_deadline += timedelta(days=1)
+    elif task.recurrence == RecurrenceType.WEEKLY:
+        next_deadline = current_deadline + timedelta(weeks=1)
+    elif task.recurrence == RecurrenceType.MONTHLY:
+        next_deadline = current_deadline + relativedelta(months=1)
+    else:
+        return None
+    
+    # Create new task
+    new_task = Task(
+        chat_id=task.chat_id,
+        author_id=task.author_id,
+        assignee_id=task.assignee_id,
+        text=task.text,
+        deadline=next_deadline,
+        recurrence=task.recurrence,
+        parent_task_id=task.parent_task_id or task.id,
+    )
+    session.add(new_task)
+    await session.flush()
+    
+    return new_task
 
 
 async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1056,23 +1175,31 @@ async def _close_task_callback(
         task.closed_at = datetime.utcnow()
         task.closed_by = user_id
         
+        # Create next recurring task if needed
+        next_task = await _create_next_recurring_task(session, task)
+        
         result = await session.execute(select(User).where(User.id == user_id))
         closer = result.scalar_one()
         
         # Update message
-        await query.edit_message_text(
-            f'✅ Задача закрыта: "{task.text}"\n'
-            f"Закрыл: {closer.display_name}"
-        )
+        msg = f'✅ Задача закрыта: "{task.text}"\nЗакрыл: {closer.display_name}'
+        if next_task:
+            msg += f"\n🔄 Следующая: {format_date(next_task.deadline)}"
+        
+        await query.edit_message_text(msg)
         
         # Notify in chat
         result = await session.execute(select(Chat).where(Chat.id == task.chat_id))
         chat = result.scalar_one()
         
+        chat_msg = f'✅ {closer.display_name} закрыл задачу "{task.text}"'
+        if next_task:
+            chat_msg += f"\n🔄 Следующая: {format_date(next_task.deadline)}"
+        
         try:
             await context.bot.send_message(
                 chat_id=task.chat_id,
-                text=f'✅ {closer.display_name} закрыл задачу "{task.text}"'
+                text=chat_msg
             )
         except Exception:
             pass  # Chat might be unavailable
@@ -1130,6 +1257,9 @@ def get_task_conversation_handler() -> ConversationHandler:
             ],
             States.TASK_DEADLINE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_task_deadline)
+            ],
+            States.TASK_RECURRENCE: [
+                CallbackQueryHandler(recurrence_callback, pattern=r"^recurrence:")
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel_handler)],
