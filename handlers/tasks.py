@@ -159,36 +159,56 @@ async def receive_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             result = await session.execute(select(User).where(User.id == author_id))
             author = result.scalar_one_or_none()
             if author:
-                context.user_data["task_assignee_id"] = author_id
-                context.user_data["task_assignee_username"] = author.username
-                
-                # Check if deadline was also parsed
-                if parsed.get("deadline"):
-                    context.user_data["task_deadline"] = parsed["deadline"]
-                    # Ask about recurrence
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 Каждый день", callback_data="recurrence:daily")],
-                        [InlineKeyboardButton("📅 Пн-Пт", callback_data="recurrence:weekdays")],
-                        [InlineKeyboardButton("📆 Каждую неделю", callback_data="recurrence:weekly")],
-                        [InlineKeyboardButton("🗓️ Каждый месяц", callback_data="recurrence:monthly")],
-                        [InlineKeyboardButton("➡️ Без повтора", callback_data="recurrence:none")],
-                    ])
-                    await update.message.reply_text(
-                        f"📌 *{parsed['task']}*\n"
-                        f"👤 Исполнитель: ты\n\n"
-                        "🔄 Повторять задачу?",
-                        parse_mode="Markdown",
-                        reply_markup=keyboard
-                    )
-                    return States.TASK_RECURRENCE
-                else:
-                    await update.message.reply_text(
-                        f"📌 *{parsed['task']}*\n"
-                        f"👤 Исполнитель: ты\n\n"
-                        "Какой дедлайн? (например: завтра, в пятницу, 15.02)",
-                        parse_mode="Markdown"
-                    )
-                    return States.TASK_DEADLINE
+                parsed["assignee_id"] = author_id
+                parsed["assignee_username"] = author.username
+    
+    # Check if we have everything for one-shot creation
+    if parsed.get("assignee_id") and parsed.get("deadline") and parsed.get("recurrence"):
+        # 🎉 Magic! Create task immediately
+        context.user_data["task_assignee_id"] = parsed["assignee_id"]
+        context.user_data["task_assignee_username"] = parsed["assignee_username"]
+        context.user_data["task_deadline"] = parsed["deadline"]
+        context.user_data["task_recurrence"] = parsed["recurrence"].value
+        return await _create_task(update, context)
+    
+    if parsed.get("assignee_id") and parsed.get("deadline"):
+        # Have assignee and deadline, ask about recurrence
+        context.user_data["task_assignee_id"] = parsed["assignee_id"]
+        context.user_data["task_assignee_username"] = parsed["assignee_username"]
+        context.user_data["task_deadline"] = parsed["deadline"]
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Каждый день", callback_data="recurrence:daily")],
+            [InlineKeyboardButton("📅 Пн-Пт", callback_data="recurrence:weekdays")],
+            [InlineKeyboardButton("📆 Каждую неделю", callback_data="recurrence:weekly")],
+            [InlineKeyboardButton("🗓️ Каждый месяц", callback_data="recurrence:monthly")],
+            [InlineKeyboardButton("➡️ Без повтора", callback_data="recurrence:none")],
+        ])
+        
+        assignee_name = f"@{parsed['assignee_username']}" if parsed.get('assignee_username') else "ты"
+        await update.message.reply_text(
+            f"📌 *{parsed['task']}*\n"
+            f"👤 {assignee_name}\n"
+            f"📅 {format_date(parsed['deadline'])}\n\n"
+            "🔄 Повторять?",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+        return States.TASK_RECURRENCE
+    
+    if parsed.get("assignee_id"):
+        # Have assignee, need deadline
+        context.user_data["task_assignee_id"] = parsed["assignee_id"]
+        context.user_data["task_assignee_username"] = parsed["assignee_username"]
+        
+        assignee_name = f"@{parsed['assignee_username']}" if parsed.get('assignee_username') else "ты"
+        await update.message.reply_text(
+            f"📌 *{parsed['task']}*\n"
+            f"👤 {assignee_name}\n\n"
+            "📅 Когда? (завтра, в пятницу, каждый понедельник...)",
+            parse_mode="Markdown"
+        )
+        return States.TASK_DEADLINE
     
     # Check if multiple candidates found
     if parsed.get("multiple_candidates") and len(parsed["multiple_candidates"]) > 1:
@@ -232,8 +252,9 @@ async def receive_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def _smart_parse_task(text: str, chat_id: int, author_id: int = None) -> dict:
-    """Parse task text using LLM to extract assignee and deadline."""
+    """Parse task text using LLM to extract ALL task components."""
     from llm.client import ask_llm
+    from database.models import RecurrenceType
     
     result = {
         "task": text,
@@ -241,33 +262,128 @@ async def _smart_parse_task(text: str, chat_id: int, author_id: int = None) -> d
         "assignee_username": None,
         "assignee_name": None,
         "deadline": None,
+        "recurrence": None,
         "is_self": False,
+        "is_complete": False,  # True if we have everything
     }
     
-    # Check for self-assignment keywords
-    self_keywords = ["мне ", "мне,", "себе ", "я должен", "я должна", "мне нужно", "мне надо"]
-    text_lower = text.lower()
-    for keyword in self_keywords:
-        if keyword in text_lower:
-            result["is_self"] = True
-            # Remove the keyword from task text
-            result["task"] = re.sub(rf"(?i){keyword.strip()}\s*", "", text).strip()
-            break
-    
-    # First check for @username in text
-    username_match = re.search(r"@(\w+)", text)
-    if username_match:
-        username = username_match.group(1)
-        async with get_session() as session:
-            user_result = await session.execute(
-                select(User).where(User.username == username)
+    # Use LLM to parse everything at once
+    if settings.yandex_gpt_api_key or settings.openai_api_key:
+        try:
+            # Get chat members for context
+            async with get_session() as session:
+                members_result = await session.execute(
+                    select(User).join(ChatMember).where(ChatMember.chat_id == chat_id)
+                )
+                members = members_result.scalars().all()
+                
+                members_list = ", ".join([
+                    f"{m.first_name or ''} (@{m.username})" 
+                    for m in members if m.username
+                ]) or "неизвестны"
+            
+            prompt = f'''Распарси задачу и извлеки компоненты.
+
+Текст: "{text}"
+Участники чата: {members_list}
+
+Определи:
+1. ЗАДАЧА - что нужно сделать (очисти от служебных слов)
+2. ИСПОЛНИТЕЛЬ - "я" если мне/себе/я должен, или @username участника, или "не указан"
+3. ДЕДЛАЙН - конкретная дата/время или "не указан"
+4. ПОВТОР - none/daily/weekdays/weekly/monthly или "не указан"
+
+Примеры повтора:
+- "каждый день" → daily
+- "каждый понедельник", "по понедельникам", "еженедельно" → weekly  
+- "каждый месяц", "ежемесячно" → monthly
+- "по будням", "пн-пт" → weekdays
+
+Ответь СТРОГО в формате:
+ЗАДАЧА: <текст>
+ИСПОЛНИТЕЛЬ: <я/@username/не указан>
+ДЕДЛАЙН: <дата или не указан>
+ПОВТОР: <none/daily/weekdays/weekly/monthly>'''
+
+            response = await ask_llm(
+                question=prompt,
+                system_prompt="Ты парсер задач. Отвечай строго в указанном формате, без пояснений.",
+                max_tokens=150,
+                temperature=0.1
             )
-            user = user_result.scalar_one_or_none()
-            if user:
-                result["assignee_id"] = user.id
-                result["assignee_username"] = username
-                result["task"] = text.replace(f"@{username}", "").strip()
-                result["is_self"] = False  # @username overrides "мне"
+            
+            # Parse LLM response
+            for line in response.split("\n"):
+                line = line.strip()
+                if line.upper().startswith("ЗАДАЧА:"):
+                    task_text = line.split(":", 1)[1].strip()
+                    if task_text and task_text.lower() != "не указан":
+                        result["task"] = task_text
+                        
+                elif line.upper().startswith("ИСПОЛНИТЕЛЬ:"):
+                    assignee = line.split(":", 1)[1].strip().lower()
+                    if assignee == "я":
+                        result["is_self"] = True
+                    elif "@" in assignee:
+                        username = re.search(r"@(\w+)", assignee)
+                        if username:
+                            result["assignee_username"] = username.group(1)
+                            # Find user in members
+                            for m in members:
+                                if m.username and m.username.lower() == result["assignee_username"].lower():
+                                    result["assignee_id"] = m.id
+                                    result["assignee_username"] = m.username
+                                    break
+                                    
+                elif line.upper().startswith("ДЕДЛАЙН:"):
+                    deadline_text = line.split(":", 1)[1].strip()
+                    if deadline_text and deadline_text.lower() != "не указан":
+                        try:
+                            result["deadline"] = parse_deadline(deadline_text)
+                        except:
+                            pass
+                            
+                elif line.upper().startswith("ПОВТОР:"):
+                    recurrence = line.split(":", 1)[1].strip().lower()
+                    recurrence_map = {
+                        "daily": RecurrenceType.DAILY,
+                        "weekdays": RecurrenceType.WEEKDAYS,
+                        "weekly": RecurrenceType.WEEKLY,
+                        "monthly": RecurrenceType.MONTHLY,
+                        "none": RecurrenceType.NONE,
+                    }
+                    if recurrence in recurrence_map:
+                        result["recurrence"] = recurrence_map[recurrence]
+                        
+        except Exception as e:
+            pass  # Fallback to manual parsing below
+    
+    # Fallback: Check for self-assignment keywords
+    if not result["is_self"] and not result["assignee_id"]:
+        self_keywords = ["мне ", "мне,", "себе ", "я должен", "я должна", "мне нужно", "мне надо"]
+        text_lower = text.lower()
+        for keyword in self_keywords:
+            if keyword in text_lower:
+                result["is_self"] = True
+                if result["task"] == text:
+                    result["task"] = re.sub(rf"(?i){keyword.strip()}\s*", "", text).strip()
+                break
+    
+    # Fallback: Check for @username in text
+    if not result["assignee_id"] and not result["is_self"]:
+        username_match = re.search(r"@(\w+)", text)
+        if username_match:
+            username = username_match.group(1)
+            async with get_session() as session:
+                user_result = await session.execute(
+                    select(User).where(User.username == username)
+                )
+                user = user_result.scalar_one_or_none()
+                if user:
+                    result["assignee_id"] = user.id
+                    result["assignee_username"] = username
+                    if result["task"] == text:
+                        result["task"] = text.replace(f"@{username}", "").strip()
     
     # If no @username, try to extract name with LLM
     if not result["assignee_id"] and (settings.yandex_gpt_api_key or settings.openai_api_key):
@@ -580,8 +696,65 @@ async def task_assignee_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 async def receive_task_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive task deadline from user."""
-    text = update.message.text.strip()
+    from database.models import RecurrenceType
     
+    text = update.message.text.strip().lower()
+    
+    # Check for recurrence patterns FIRST
+    recurrence_patterns = {
+        RecurrenceType.DAILY: ["каждый день", "ежедневно"],
+        RecurrenceType.WEEKDAYS: ["по будням", "пн-пт", "будни"],
+        RecurrenceType.WEEKLY: ["каждый понедельник", "каждый вторник", "каждую среду", 
+                               "каждый четверг", "каждую пятницу", "каждую субботу",
+                               "каждое воскресенье", "еженедельно", "раз в неделю",
+                               "по понедельникам", "по вторникам", "по средам",
+                               "по четвергам", "по пятницам", "по субботам", "по воскресеньям"],
+        RecurrenceType.MONTHLY: ["каждый месяц", "ежемесячно", "раз в месяц"],
+    }
+    
+    detected_recurrence = None
+    for recurrence, patterns in recurrence_patterns.items():
+        for pattern in patterns:
+            if pattern in text:
+                detected_recurrence = recurrence
+                break
+        if detected_recurrence:
+            break
+    
+    if detected_recurrence:
+        # Parse day of week for weekly recurrence
+        day_map = {
+            "понедельник": 0, "вторник": 1, "среда": 2, "среду": 2,
+            "четверг": 3, "пятниц": 4, "суббот": 5, "воскресень": 6,
+        }
+        
+        from datetime import date
+        today = date.today()
+        target_weekday = None
+        
+        for day_name, weekday in day_map.items():
+            if day_name in text:
+                target_weekday = weekday
+                break
+        
+        if target_weekday is not None:
+            # Calculate next occurrence of this weekday
+            days_ahead = target_weekday - today.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            next_date = today + timedelta(days=days_ahead)
+            deadline = datetime.combine(next_date, datetime.min.time().replace(hour=12))
+        else:
+            # Default: tomorrow at noon
+            deadline = datetime.combine(today + timedelta(days=1), datetime.min.time().replace(hour=12))
+        
+        context.user_data["task_deadline"] = deadline
+        context.user_data["task_recurrence"] = detected_recurrence.value
+        
+        # Create task immediately! 🎉
+        return await _create_task(update, context)
+    
+    # Regular deadline parsing
     try:
         deadline = parse_deadline(text)
         context.user_data["task_deadline"] = deadline
