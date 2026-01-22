@@ -419,51 +419,77 @@ async def _smart_parse_task(text: str, chat_id: int, author_id: int = None) -> d
     # Fallback: Check for recurrence patterns
     if not result["recurrence"]:
         text_lower = text.lower()
-        recurrence_patterns = {
-            RecurrenceType.DAILY: ["каждый день", "ежедневно"],
-            RecurrenceType.WEEKDAYS: ["по будням", "пн-пт"],
-            RecurrenceType.WEEKLY: ["каждый понедельник", "каждый вторник", "каждую среду", 
-                                   "каждый четверг", "каждую пятницу", "каждую субботу",
-                                   "каждое воскресенье", "еженедельно", "раз в неделю",
-                                   "по понедельникам", "по вторникам", "по средам",
-                                   "по четвергам", "по пятницам", "по субботам", "по воскресеньям"],
-            RecurrenceType.MONTHLY: ["каждый месяц", "ежемесячно"],
+        
+        # Patterns with time of day
+        time_patterns = {
+            "по утрам": (RecurrenceType.DAILY, 9),
+            "каждое утро": (RecurrenceType.DAILY, 9),
+            "утром каждый день": (RecurrenceType.DAILY, 9),
+            "по вечерам": (RecurrenceType.DAILY, 19),
+            "каждый вечер": (RecurrenceType.DAILY, 19),
+            "вечером каждый день": (RecurrenceType.DAILY, 19),
+            "перед сном": (RecurrenceType.DAILY, 22),
+            "на ночь": (RecurrenceType.DAILY, 22),
         }
         
-        for recurrence, patterns in recurrence_patterns.items():
-            for pattern in patterns:
-                if pattern in text_lower:
-                    result["recurrence"] = recurrence
-                    # Remove pattern from task text
-                    result["task"] = re.sub(rf"(?i){pattern}", "", result["task"]).strip()
-                    
-                    # Calculate deadline for weekly tasks
-                    if recurrence == RecurrenceType.WEEKLY:
-                        day_map = {
-                            "понедельник": 0, "вторник": 1, "среда": 2, "среду": 2,
-                            "четверг": 3, "пятниц": 4, "суббот": 5, "воскресень": 6,
-                        }
-                        from datetime import date
-                        today = date.today()
-                        
-                        for day_name, weekday in day_map.items():
-                            if day_name in text_lower:
-                                days_ahead = weekday - today.weekday()
-                                if days_ahead <= 0:
-                                    days_ahead += 7
-                                next_date = today + timedelta(days=days_ahead)
-                                result["deadline"] = datetime.combine(next_date, datetime.min.time().replace(hour=12))
-                                break
-                    
-                    # Default deadline for other recurrence types
-                    if not result["deadline"]:
-                        from datetime import date
-                        tomorrow = date.today() + timedelta(days=1)
-                        result["deadline"] = datetime.combine(tomorrow, datetime.min.time().replace(hour=12))
-                    
-                    break
-            if result["recurrence"]:
+        for pattern, (recurrence, hour) in time_patterns.items():
+            if pattern in text_lower:
+                result["recurrence"] = recurrence
+                result["task"] = re.sub(rf"(?i){pattern}", "", result["task"]).strip()
+                from datetime import date
+                tomorrow = date.today() + timedelta(days=1)
+                result["deadline"] = datetime.combine(tomorrow, datetime.min.time().replace(hour=hour))
                 break
+        
+        # Regular recurrence patterns (if not matched above)
+        if not result["recurrence"]:
+            recurrence_patterns = {
+                RecurrenceType.DAILY: ["каждый день", "ежедневно", "каждые сутки"],
+                RecurrenceType.WEEKDAYS: ["по будням", "пн-пт", "в рабочие дни", "по рабочим дням"],
+                RecurrenceType.WEEKLY: ["каждый понедельник", "каждый вторник", "каждую среду", 
+                                       "каждый четверг", "каждую пятницу", "каждую субботу",
+                                       "каждое воскресенье", "еженедельно", "раз в неделю",
+                                       "по понедельникам", "по вторникам", "по средам",
+                                       "по четвергам", "по пятницам", "по субботам", "по воскресеньям",
+                                       "каждую неделю"],
+                RecurrenceType.MONTHLY: ["каждый месяц", "ежемесячно", "раз в месяц", 
+                                        "в начале месяца", "в конце месяца", "1 числа"],
+            }
+            
+            for recurrence, patterns in recurrence_patterns.items():
+                for pattern in patterns:
+                    if pattern in text_lower:
+                        result["recurrence"] = recurrence
+                        # Remove pattern from task text
+                        result["task"] = re.sub(rf"(?i){pattern}", "", result["task"]).strip()
+                        
+                        # Calculate deadline for weekly tasks
+                        if recurrence == RecurrenceType.WEEKLY:
+                            day_map = {
+                                "понедельник": 0, "вторник": 1, "среда": 2, "среду": 2,
+                                "четверг": 3, "пятниц": 4, "суббот": 5, "воскресень": 6,
+                            }
+                            from datetime import date
+                            today = date.today()
+                            
+                            for day_name, weekday in day_map.items():
+                                if day_name in text_lower:
+                                    days_ahead = weekday - today.weekday()
+                                    if days_ahead <= 0:
+                                        days_ahead += 7
+                                    next_date = today + timedelta(days=days_ahead)
+                                    result["deadline"] = datetime.combine(next_date, datetime.min.time().replace(hour=12))
+                                    break
+                        
+                        # Default deadline for other recurrence types
+                        if not result["deadline"]:
+                            from datetime import date
+                            tomorrow = date.today() + timedelta(days=1)
+                            result["deadline"] = datetime.combine(tomorrow, datetime.min.time().replace(hour=12))
+                        
+                        break
+                if result["recurrence"]:
+                    break
     
     # Fallback: Check for @username in text
     if not result["assignee_id"] and not result["is_self"]:
