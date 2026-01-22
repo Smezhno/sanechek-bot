@@ -1,0 +1,16 @@
+[Unit]
+Description=Sanechek Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=yc-user
+WorkingDirectory=/home/yc-user/sanechek-bot
+Environment=PATH=/home/yc-user/sanechek-bot/venv/bin:/usr/bin
+ExecStart=/home/yc-user/sanechek-bot/venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
