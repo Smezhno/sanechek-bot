@@ -603,6 +603,23 @@ async def receive_task_assignee(update: Update, context: ContextTypes.DEFAULT_TY
     """Receive task assignee from user."""
     text = update.message.text.strip()
     chat_id = context.user_data["task_chat_id"]
+    user_id = update.effective_user.id
+    
+    # Check if user means themselves
+    self_keywords = ["я", "мне", "себе", "сам", "сама", "себя"]
+    if text.lower() in self_keywords:
+        async with get_session() as session:
+            result = await session.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            
+            if user:
+                context.user_data["task_assignee_id"] = user.id
+                context.user_data["task_assignee_username"] = user.username
+                
+                await update.message.reply_text(
+                    "Какой дедлайн? (например: завтра, в пятницу, 15.02)"
+                )
+                return States.TASK_DEADLINE
     
     # First, check for @username
     username_match = re.search(r"@(\w+)", text)
