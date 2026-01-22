@@ -55,7 +55,7 @@ def setup_handlers(app: Application) -> None:
     )
     from handlers.ask import ask_handler, reply_to_bot_handler
     from handlers.sarcasm import sarcasm_handler
-    from handlers.task_detector import analyze_for_tasks, suggest_task_callback
+    from handlers.task_detector import analyze_for_tasks, suggest_task_callback, force_detect_handler
     
     # Basic commands
     app.add_handler(CommandHandler("start", start_handler))
@@ -91,6 +91,9 @@ def setup_handlers(app: Application) -> None:
     
     # Ask LLM command
     app.add_handler(CommandHandler("ask", ask_handler))
+    
+    # Force task detection (for testing)
+    app.add_handler(CommandHandler("detect", force_detect_handler))
     
     # Reply to bot = ask question
     app.add_handler(MessageHandler(

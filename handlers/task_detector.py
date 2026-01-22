@@ -178,6 +178,18 @@ async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         pass
 
 
+async def force_detect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Force task detection (for testing)."""
+    # Temporarily set counter to trigger analysis
+    chat_id = update.effective_chat.id
+    context.bot_data[f"task_detector_{chat_id}"] = CHECK_INTERVAL_MESSAGES - 1
+    
+    await update.message.reply_text("🔍 Анализирую последние сообщения...")
+    
+    # Run analysis
+    await analyze_for_tasks(update, context)
+
+
 async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle suggestion callback."""
     query = update.callback_query
