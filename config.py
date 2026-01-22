@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     openai_base_url: str = Field("https://api.openai.com/v1", env="OPENAI_BASE_URL")
     openai_model: str = Field("gpt-4o-mini", env="OPENAI_MODEL")
     
+    # YandexGPT (preferred if configured)
+    yandex_gpt_api_key: str = Field("", env="YANDEX_GPT_API_KEY")
+    yandex_folder_id: str = Field("", env="YANDEX_FOLDER_ID")
+    
     # Initial admins (comma-separated user IDs)
     initial_admins_str: str = Field("", env="INITIAL_ADMINS")
     

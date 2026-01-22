@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from sqlalchemy import select
 
 from database import get_session, Message, Chat
-from llm.client import get_client
+from llm.client import ask_llm
 from config import settings
 
 
@@ -53,7 +53,7 @@ async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.bot_data[counter_key] = 0
     
     # Don't analyze if no API key
-    if not settings.openai_api_key:
+    if not settings.openai_api_key and not settings.yandex_gpt_api_key:
         return
     
     # Get recent messages
@@ -96,18 +96,12 @@ async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     # Call LLM with minimal tokens
     try:
-        client = get_client()
-        
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {"role": "user", "content": DETECTION_PROMPT.format(messages=messages_text)}
-            ],
-            max_tokens=100,  # Reduced from 200
-            temperature=0.2,
+        result_text = await ask_llm(
+            question=DETECTION_PROMPT.format(messages=messages_text),
+            system_prompt="Ты анализатор задач. Отвечай кратко.",
+            max_tokens=100,
+            temperature=0.2
         )
-        
-        result_text = response.choices[0].message.content.strip()
         
         # Check if task was detected
         if "НЕТ" in result_text.upper() or "ЗАДАЧА" not in result_text.upper():
@@ -185,7 +179,7 @@ async def force_detect_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("🔍 Анализирую последние сообщения...")
     
     # Don't analyze if no API key
-    if not settings.openai_api_key:
+    if not settings.openai_api_key and not settings.yandex_gpt_api_key:
         await update.message.reply_text("❌ API ключ не настроен")
         return
     
@@ -233,18 +227,12 @@ async def force_detect_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Call LLM
     try:
-        client = get_client()
-        
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {"role": "user", "content": DETECTION_PROMPT.format(messages=messages_text)}
-            ],
+        result_text = await ask_llm(
+            question=DETECTION_PROMPT.format(messages=messages_text),
+            system_prompt="Ты анализатор задач. Отвечай кратко.",
             max_tokens=100,
-            temperature=0.2,
+            temperature=0.2
         )
-        
-        result_text = response.choices[0].message.content.strip()
         
         # Check if task was detected
         if "НЕТ" in result_text.upper() or "ЗАДАЧА" not in result_text.upper():
