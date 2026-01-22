@@ -315,45 +315,129 @@ async def receive_task_assignee(update: Update, context: ContextTypes.DEFAULT_TY
     text = update.message.text.strip()
     chat_id = context.user_data["task_chat_id"]
     
-    # Extract username
-    username_match = re.search(r"@?(\w+)", text)
-    if not username_match:
-        await update.message.reply_text(
-            "Не понял пользователя. Укажи ответным сообщением @username"
-        )
-        return States.TASK_ASSIGNEE
+    # First, check for @username
+    username_match = re.search(r"@(\w+)", text)
     
-    username = username_match.group(1)
-    
-    # Check if user exists and is in chat
     async with get_session() as session:
-        result = await session.execute(
-            select(User).where(User.username == username)
-        )
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            await update.message.reply_text(
-                "Пользователь не найден. Укажи ответным сообщением другого пользователя"
+        if username_match:
+            username = username_match.group(1)
+            result = await session.execute(
+                select(User).where(User.username == username)
             )
-            return States.TASK_ASSIGNEE
+            user = result.scalar_one_or_none()
+            
+            if user:
+                is_member = await is_user_in_chat(session, user.id, chat_id)
+                if is_member:
+                    context.user_data["task_assignee_id"] = user.id
+                    context.user_data["task_assignee_username"] = username
+                    
+                    await update.message.reply_text(
+                        "Какой дедлайн? (например: завтра, в пятницу, 15.02)"
+                    )
+                    return States.TASK_DEADLINE
         
-        # Check if user is in chat
-        is_member = await is_user_in_chat(session, user.id, chat_id)
-        if not is_member:
-            await update.message.reply_text(
-                "Пользователь не состоит в этом чате. "
-                "Укажи ответным сообщением другого пользователя или себя"
+        # Try to find by name using LLM
+        if settings.yandex_gpt_api_key or settings.openai_api_key:
+            members_result = await session.execute(
+                select(User).join(ChatMember).where(ChatMember.chat_id == chat_id)
             )
-            return States.TASK_ASSIGNEE
-        
-        context.user_data["task_assignee_id"] = user.id
-        context.user_data["task_assignee_username"] = username
+            members = members_result.scalars().all()
+            
+            if members:
+                # Try exact or fuzzy match by name
+                text_lower = text.lower().strip()
+                matching = []
+                
+                for m in members:
+                    first = (m.first_name or "").lower()
+                    last = (m.last_name or "").lower()
+                    full = f"{first} {last}".strip()
+                    
+                    # Check various matches
+                    if (text_lower == first or 
+                        text_lower == last or 
+                        text_lower == full or
+                        text_lower in first or
+                        first.startswith(text_lower)):
+                        matching.append(m)
+                
+                if len(matching) == 1:
+                    # Exact match
+                    user = matching[0]
+                    context.user_data["task_assignee_id"] = user.id
+                    context.user_data["task_assignee_username"] = user.username
+                    
+                    await update.message.reply_text(
+                        f"👤 Исполнитель: @{user.username}\n\n"
+                        "Какой дедлайн? (например: завтра, в пятницу, 15.02)"
+                    )
+                    return States.TASK_DEADLINE
+                
+                elif len(matching) > 1:
+                    # Multiple matches - show buttons
+                    buttons = []
+                    for m in matching[:5]:
+                        name = f"{m.first_name or ''} {m.last_name or ''}".strip()
+                        buttons.append([
+                            InlineKeyboardButton(
+                                f"{name} (@{m.username})",
+                                callback_data=f"task_assignee:{m.id}:{m.username}"
+                            )
+                        ])
+                    buttons.append([
+                        InlineKeyboardButton("❌ Другой", callback_data="task_assignee:other")
+                    ])
+                    
+                    await update.message.reply_text(
+                        "🤔 Нашёл несколько подходящих. Кого имел в виду?",
+                        reply_markup=InlineKeyboardMarkup(buttons)
+                    )
+                    return States.TASK_ASSIGNEE
+                
+                # No match by name - try LLM for nicknames
+                from llm.client import ask_llm
+                members_list = ", ".join([
+                    f"{m.first_name or ''} {m.last_name or ''} (@{m.username})" 
+                    for m in members if m.username
+                ])
+                
+                try:
+                    prompt = f"""Кто из участников соответствует имени "{text}"?
+                    
+Участники: {members_list}
+
+Учитывай уменьшительные имена: Витя=Виктор, Саша=Александр, Давид=David, Дима=Дмитрий и т.д.
+
+Ответь ТОЛЬКО @username одного человека или "не найден"."""
+
+                    response = await ask_llm(
+                        question=prompt,
+                        system_prompt="Ты определяешь пользователя по имени. Отвечай только @username.",
+                        max_tokens=50,
+                        temperature=0.1
+                    )
+                    
+                    found_match = re.search(r"@(\w+)", response)
+                    if found_match:
+                        username = found_match.group(1)
+                        for m in members:
+                            if m.username and m.username.lower() == username.lower():
+                                context.user_data["task_assignee_id"] = m.id
+                                context.user_data["task_assignee_username"] = m.username
+                                
+                                await update.message.reply_text(
+                                    f"👤 Исполнитель: @{m.username}\n\n"
+                                    "Какой дедлайн? (например: завтра, в пятницу, 15.02)"
+                                )
+                                return States.TASK_DEADLINE
+                except Exception:
+                    pass
     
     await update.message.reply_text(
-        "Какой дедлайн? Укажи ответным сообщением (например: завтра, в пятницу, 15.02)"
+        "Не нашёл такого пользователя в чате. Укажи @username"
     )
-    return States.TASK_DEADLINE
+    return States.TASK_ASSIGNEE
 
 
 async def task_assignee_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
