@@ -17,6 +17,17 @@ MIN_MESSAGE_LENGTH = 10  # Ignore very short messages
 MAX_MESSAGES_TO_ANALYZE = 7  # Limit messages for analysis
 
 
+def escape_markdown(text: str) -> str:
+    """Escape special Markdown characters."""
+    if not text:
+        return ""
+    # Escape special characters for MarkdownV2
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
 DETECTION_PROMPT = """Проанализируй сообщения и найди потенциальные задачи.
 
 Признаки задачи:
@@ -156,7 +167,7 @@ async def analyze_for_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             assignee = task.get("assignee", "") if isinstance(task, dict) else ""
             
             assignee_text = f" 👤 {assignee}" if assignee else ""
-            suggestion += f"📌 *{task_text}*{assignee_text}\n"
+            suggestion += f"📌 *{escape_markdown(task_text)}*{escape_markdown(assignee_text)}\n"
             task_hash = abs(hash(task_text)) % 10000
             
             # Store task data for callback
@@ -290,7 +301,7 @@ async def force_detect_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             assignee = task.get("assignee", "") if isinstance(task, dict) else ""
             
             assignee_text = f" 👤 {assignee}" if assignee else ""
-            suggestion += f"📌 *{task_text}*{assignee_text}\n"
+            suggestion += f"📌 *{escape_markdown(task_text)}*{escape_markdown(assignee_text)}\n"
             task_hash = abs(hash(task_text)) % 10000
             
             context.bot_data[f"suggested_task_{task_hash}"] = {
@@ -354,10 +365,10 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 task_data["assignee_name"] = assignee_user.display_name
                 
                 await query.edit_message_text(
-                    f"📌 *{task_data['text']}*\n"
-                    f"👤 {assignee_user.display_name}\n\n"
+                    f"📌 *{escape_markdown(task_data['text'])}*\n"
+                    f"👤 {escape_markdown(assignee_user.display_name)}\n\n"
                     f"⏰ Когда дедлайн?\n"
-                    f"Ответь сообщением (например: завтра, через 3 дня)",
+                    f"Ответь сообщением \\(например: завтра, через 3 дня\\)",
                     parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
@@ -382,10 +393,10 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
         task_data["assignee_name"] = query.from_user.first_name
         
         await query.edit_message_text(
-            f"📌 *{task_data['text']}*\n"
-            f"👤 {query.from_user.first_name}\n\n"
+            f"📌 *{escape_markdown(task_data['text'])}*\n"
+            f"👤 {escape_markdown(query.from_user.first_name)}\n\n"
             f"⏰ Когда дедлайн?\n"
-            f"Ответь сообщением (например: завтра, через 3 дня)",
+            f"Ответь сообщением \\(например: завтра, через 3 дня\\)",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
@@ -403,9 +414,9 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
             return
         
         await query.edit_message_text(
-            f"📌 *{task_data['text']}*\n\n"
+            f"📌 *{escape_markdown(task_data['text'])}*\n\n"
             f"⏰ Когда дедлайн?\n"
-            f"Ответь сообщением (например: завтра, через 3 дня, в пятницу)\n"
+            f"Ответь сообщением \\(например: завтра, через 3 дня, в пятницу\\)\n"
             f"Или нажми кнопку:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
@@ -438,8 +449,8 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
             
             await query.edit_message_text(
                 f"✅ Задача создана!\n\n"
-                f"📌 *{task_data['text']}*\n"
-                f"👤 {task_data.get('assignee_name', 'Не назначен')}\n"
+                f"📌 *{escape_markdown(task_data['text'])}*\n"
+                f"👤 {escape_markdown(task_data.get('assignee_name', 'Не назначен'))}\n"
                 f"📅 Без дедлайна",
                 parse_mode="Markdown"
             )
@@ -475,10 +486,10 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 task_data["assignee_name"] = assignee_user.display_name
                 
                 await query.edit_message_text(
-                    f"📌 *{task_data['text']}*\n"
-                    f"👤 {assignee_user.display_name}\n\n"
+                    f"📌 *{escape_markdown(task_data['text'])}*\n"
+                    f"👤 {escape_markdown(assignee_user.display_name)}\n\n"
                     f"⏰ Когда дедлайн?\n"
-                    f"Ответь сообщением (например: завтра, через 3 дня)",
+                    f"Ответь сообщением \\(например: завтра, через 3 дня\\)",
                     parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{action}")]
@@ -489,7 +500,7 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     # No assignee found, ask for it
     await query.edit_message_text(
-        f"📌 *{task_data['text']}*\n\n"
+        f"📌 *{escape_markdown(task_data['text'])}*\n\n"
         f"👤 Кто исполнитель?\n"
         f"Ответь сообщением с @username или нажми кнопку:",
         parse_mode="Markdown",
@@ -641,9 +652,9 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
                 await update.message.reply_text(
                     f"✅ Задача создана!\n\n"
-                    f"📌 *{task_data['text']}*\n"
-                    f"👤 {task_data.get('assignee_name', 'Не назначен')}\n"
-                    f"📅 {deadline_str}",
+                    f"📌 *{escape_markdown(task_data['text'])}*\n"
+                    f"👤 {escape_markdown(task_data.get('assignee_name', 'Не назначен'))}\n"
+                    f"📅 {escape_markdown(deadline_str)}",
                     parse_mode="Markdown"
                 )
         return
