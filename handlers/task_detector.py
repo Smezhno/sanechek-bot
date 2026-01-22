@@ -514,14 +514,24 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle assignee/deadline input for suggested tasks."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if not update.message or not update.message.text:
+        logger.debug("handle_task_details: no message or text")
         return
     
     text = update.message.text.strip()
     
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info(f"handle_task_details called: text='{text}', waiting_assignee={context.user_data.get('waiting_assignee_for')}, waiting_deadline={context.user_data.get('waiting_deadline_for')}")
+    # Early return if not waiting for anything
+    waiting_assignee = context.user_data.get("waiting_assignee_for")
+    waiting_deadline = context.user_data.get("waiting_deadline_for")
+    
+    if not waiting_assignee and not waiting_deadline:
+        logger.debug(f"handle_task_details: not waiting for anything, text='{text}'")
+        return
+    
+    logger.info(f"handle_task_details called: text='{text}', waiting_assignee={waiting_assignee}, waiting_deadline={waiting_deadline}")
     
     # Skip if this is a reply to bot asking for time (from /ask handler)
     if update.message.reply_to_message:
