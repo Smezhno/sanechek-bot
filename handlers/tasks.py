@@ -472,8 +472,25 @@ async def receive_task_assignee(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
     
+    # Build helpful message
+    known_names = []
+    async with get_session() as session:
+        members_result = await session.execute(
+            select(User).join(ChatMember).where(ChatMember.chat_id == chat_id)
+        )
+        for m in members_result.scalars().all():
+            name = m.first_name or ""
+            if m.username:
+                known_names.append(f"{name} (@{m.username})")
+    
+    hint = ""
+    if known_names:
+        hint = f"\n\nИзвестные мне участники:\n" + "\n".join(f"• {n}" for n in known_names[:5])
+    
     await update.message.reply_text(
-        "Не нашёл такого пользователя в чате. Укажи @username"
+        f"🤷 Не нашёл «{text}» в чате.\n\n"
+        f"Укажи точный @username (например: @Daviddobro88)"
+        f"{hint}"
     )
     return States.TASK_ASSIGNEE
 
