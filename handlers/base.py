@@ -97,17 +97,17 @@ def setup_handlers(app: Application) -> None:
     # Force task detection (for testing)
     app.add_handler(CommandHandler("detect", force_detect_handler))
     
+    # Handle task details input (assignee/deadline for suggested tasks) - MUST BE FIRST
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
+        handle_task_details
+    ), group=0)
+    
     # Reply to bot = ask question
     app.add_handler(MessageHandler(
         filters.TEXT & filters.REPLY & ~filters.COMMAND,
         reply_to_bot_handler
     ))
-    
-    # Handle task details input (assignee/deadline for suggested tasks)
-    app.add_handler(MessageHandler(
-        filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
-        handle_task_details
-    ), group=0)
     
     # Callback query handlers
     app.add_handler(CallbackQueryHandler(task_callback_handler, pattern=r"^task:"))

@@ -520,6 +520,9 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     import logging
     logger = logging.getLogger(__name__)
     
+    # Log every call to see if handler is invoked
+    logger.info(f"handle_task_details invoked: user_id={update.effective_user.id if update.effective_user else None}, chat_id={update.effective_chat.id if update.effective_chat else None}")
+    
     if not update.message or not update.message.text:
         logger.debug("handle_task_details: no message or text")
         return
@@ -530,11 +533,11 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     waiting_assignee = context.user_data.get("waiting_assignee_for")
     waiting_deadline = context.user_data.get("waiting_deadline_for")
     
+    logger.info(f"handle_task_details: text='{text}', waiting_assignee={waiting_assignee}, waiting_deadline={waiting_deadline}, user_data keys={list(context.user_data.keys())}")
+    
     if not waiting_assignee and not waiting_deadline:
         logger.debug(f"handle_task_details: not waiting for anything, text='{text}'")
         return
-    
-    logger.info(f"handle_task_details called: text='{text}', waiting_assignee={waiting_assignee}, waiting_deadline={waiting_deadline}")
     
     # Skip if this is a reply to bot asking for time (from /ask handler)
     if update.message.reply_to_message:
