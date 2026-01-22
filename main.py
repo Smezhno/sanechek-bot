@@ -37,6 +37,7 @@ async def post_init(application: Application) -> None:
     commands = [
         BotCommand("start", "Начать работу с ботом"),
         BotCommand("help", "Показать справку"),
+        BotCommand("app", "Открыть веб-интерфейс"),
         BotCommand("task", "Создать задачу"),
         BotCommand("tasks", "Активные задачи чата"),
         BotCommand("mytasks", "Мои задачи"),

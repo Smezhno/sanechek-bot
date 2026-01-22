@@ -44,6 +44,7 @@ HELP_GROUP = """Команды чата:
 
 HELP_DM = """Команды:
 
+/app — открыть веб-интерфейс
 /mytasks — все мои задачи
 /reminders — мои напоминания
 /summary — саммари по подпискам
@@ -75,6 +76,23 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Suggest subscription setup
     await update.message.reply_text(
         "Используй /subscribe, чтобы настроить, по каким чатам получать саммари"
+    )
+
+
+async def app_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /app command - open Mini App."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+    
+    web_app_button = InlineKeyboardButton(
+        text="🚀 Открыть приложение",
+        web_app=WebAppInfo(url=settings.mini_app_url)
+    )
+    
+    keyboard = InlineKeyboardMarkup([[web_app_button]])
+    
+    await update.message.reply_text(
+        "📱 Открой веб-интерфейс:",
+        reply_markup=keyboard
     )
 
 

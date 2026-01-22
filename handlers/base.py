@@ -32,7 +32,7 @@ class States:
 def setup_handlers(app: Application) -> None:
     """Setup all bot handlers."""
     from handlers.start import (
-        start_handler, help_handler, cancel_handler,
+        start_handler, help_handler, cancel_handler, app_handler,
         handle_new_chat_members, handle_left_chat_member,
         handle_message
     )
@@ -61,6 +61,7 @@ def setup_handlers(app: Application) -> None:
     # Basic commands
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
+    app.add_handler(CommandHandler("app", app_handler))
     
     # Conversation handlers (must be added before simple command handlers)
     app.add_handler(get_task_conversation_handler())

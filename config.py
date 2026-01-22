@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # Reminder timing
     task_reminder_hours_before: int = 4
     
+    # Mini App URL
+    mini_app_url: str = Field("http://localhost:8000", env="MINI_APP_URL")
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

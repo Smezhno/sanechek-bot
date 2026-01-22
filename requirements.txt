@@ -22,3 +22,7 @@ python-dotenv==1.1.1
 pydantic==2.10.4
 pydantic-settings==2.7.1
 
+# Web API for Mini App
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+

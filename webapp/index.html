@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Санечек</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <h1 class="header-title">Санечек</h1>
+            <button class="header-button" id="menuBtn">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <path d="M3 12H21M3 6H21M3 18H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+            </button>
+        </header>
+
+        <!-- Navigation -->
+        <nav class="nav" id="nav">
+            <button class="nav-item active" data-page="tasks">
+                <span class="nav-icon">📌</span>
+                <span>Задачи</span>
+            </button>
+            <button class="nav-item" data-page="expenses">
+                <span class="nav-icon">💰</span>
+                <span>Расходы</span>
+            </button>
+            <button class="nav-item" data-page="reminders">
+                <span class="nav-icon">⏰</span>
+                <span>Напоминания</span>
+            </button>
+            <button class="nav-item" data-page="summary">
+                <span class="nav-icon">📊</span>
+                <span>Саммари</span>
+            </button>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Tasks Page -->
+            <div class="page active" id="tasks-page">
+                <div class="page-header">
+                    <h2>Мои задачи</h2>
+                    <button class="btn btn-primary" id="createTaskBtn">
+                        <span>+</span> Создать
+                    </button>
+                </div>
+                <div class="filter-tabs">
+                    <button class="filter-tab active" data-filter="all">Все</button>
+                    <button class="filter-tab" data-filter="open">Активные</button>
+                    <button class="filter-tab" data-filter="overdue">Просроченные</button>
+                </div>
+                <div class="tasks-list" id="tasksList">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </div>
+
+            <!-- Expenses Page -->
+            <div class="page" id="expenses-page">
+                <div class="page-header">
+                    <h2>Расходы</h2>
+                    <button class="btn btn-primary" id="addExpenseBtn">
+                        <span>+</span> Добавить
+                    </button>
+                </div>
+                <div class="stats">
+                    <div class="stat-card">
+                        <div class="stat-label">Сегодня</div>
+                        <div class="stat-value" id="todayExpenses">0 ₽</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Этот месяц</div>
+                        <div class="stat-value" id="monthExpenses">0 ₽</div>
+                    </div>
+                </div>
+                <div class="expenses-list" id="expensesList">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </div>
+
+            <!-- Reminders Page -->
+            <div class="page" id="reminders-page">
+                <div class="page-header">
+                    <h2>Напоминания</h2>
+                    <button class="btn btn-primary" id="createReminderBtn">
+                        <span>+</span> Создать
+                    </button>
+                </div>
+                <div class="reminders-list" id="remindersList">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </div>
+
+            <!-- Summary Page -->
+            <div class="page" id="summary-page">
+                <div class="page-header">
+                    <h2>Саммари</h2>
+                </div>
+                <div class="summary-content" id="summaryContent">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Create Task Modal -->
+        <div class="modal" id="taskModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Создать задачу</h3>
+                    <button class="modal-close" id="closeTaskModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Описание задачи</label>
+                        <input type="text" id="taskText" placeholder="Что нужно сделать?" class="input">
+                    </div>
+                    <div class="form-group">
+                        <label>Исполнитель</label>
+                        <input type="text" id="taskAssignee" placeholder="@username или имя" class="input">
+                    </div>
+                    <div class="form-group">
+                        <label>Дедлайн</label>
+                        <input type="text" id="taskDeadline" placeholder="завтра, в пятницу, 15.02" class="input">
+                    </div>
+                    <div class="form-group">
+                        <label>Повтор</label>
+                        <select id="taskRecurrence" class="input">
+                            <option value="none">Без повтора</option>
+                            <option value="daily">Каждый день</option>
+                            <option value="weekdays">Пн-Пт</option>
+                            <option value="weekly">Каждую неделю</option>
+                            <option value="monthly">Каждый месяц</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="cancelTaskBtn">Отмена</button>
+                    <button class="btn btn-primary" id="saveTaskBtn">Создать</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Create Expense Modal -->
+        <div class="modal" id="expenseModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Добавить расход</h3>
+                    <button class="modal-close" id="closeExpenseModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Сумма</label>
+                        <input type="number" id="expenseAmount" placeholder="0" class="input">
+                    </div>
+                    <div class="form-group">
+                        <label>Описание</label>
+                        <input type="text" id="expenseDescription" placeholder="На что потрачено?" class="input">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="cancelExpenseBtn">Отмена</button>
+                    <button class="btn btn-primary" id="saveExpenseBtn">Добавить</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Create Reminder Modal -->
+        <div class="modal" id="reminderModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Создать напоминание</h3>
+                    <button class="modal-close" id="closeReminderModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Текст напоминания</label>
+                        <input type="text" id="reminderText" placeholder="О чём напомнить?" class="input">
+                    </div>
+                    <div class="form-group">
+                        <label>Когда</label>
+                        <input type="text" id="reminderTime" placeholder="через 30 минут, завтра в 15:00" class="input">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="cancelReminderBtn">Отмена</button>
+                    <button class="btn btn-primary" id="saveReminderBtn">Создать</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
+
