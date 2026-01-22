@@ -59,18 +59,65 @@ async def task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text("Что нужно сделать? Укажи ответным сообщением")
         return States.TASK_TEXT
     
-    # Try to parse the full command
-    parsed = await _parse_task_command(args, chat.id)
+    # Use smart parsing with LLM
+    parsed = await _smart_parse_task(args, chat.id, user.id)
+    context.user_data["task_text"] = parsed["task"][:settings.max_task_length]
     
-    if parsed["text"]:
-        context.user_data["task_text"] = parsed["text"][:settings.max_task_length]
-    else:
-        await update.message.reply_text("Что нужно сделать? Укажи ответным сообщением")
-        return States.TASK_TEXT
+    # Handle self-assignment
+    if parsed.get("is_self"):
+        async with get_session() as session:
+            result = await session.execute(select(User).where(User.id == user.id))
+            author = result.scalar_one_or_none()
+            if author:
+                parsed["assignee_id"] = user.id
+                parsed["assignee_username"] = author.username
     
-    if parsed["assignee_username"]:
+    # Check if we have everything for magic creation
+    if parsed.get("assignee_id") and parsed.get("deadline") and parsed.get("recurrence"):
+        context.user_data["task_assignee_id"] = parsed["assignee_id"]
         context.user_data["task_assignee_username"] = parsed["assignee_username"]
-    else:
+        context.user_data["task_deadline"] = parsed["deadline"]
+        context.user_data["task_recurrence"] = parsed["recurrence"].value
+        return await _create_task(update, context)
+    
+    if parsed.get("assignee_id") and parsed.get("deadline"):
+        context.user_data["task_assignee_id"] = parsed["assignee_id"]
+        context.user_data["task_assignee_username"] = parsed["assignee_username"]
+        context.user_data["task_deadline"] = parsed["deadline"]
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Каждый день", callback_data="recurrence:daily")],
+            [InlineKeyboardButton("📅 Пн-Пт", callback_data="recurrence:weekdays")],
+            [InlineKeyboardButton("📆 Каждую неделю", callback_data="recurrence:weekly")],
+            [InlineKeyboardButton("🗓️ Каждый месяц", callback_data="recurrence:monthly")],
+            [InlineKeyboardButton("➡️ Без повтора", callback_data="recurrence:none")],
+        ])
+        
+        assignee_name = f"@{parsed['assignee_username']}" if parsed.get('assignee_username') else "ты"
+        await update.message.reply_text(
+            f"📌 *{parsed['task']}*\n"
+            f"👤 {assignee_name}\n"
+            f"📅 {format_date(parsed['deadline'])}\n\n"
+            "🔄 Повторять?",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+        return States.TASK_RECURRENCE
+    
+    if parsed.get("assignee_id"):
+        context.user_data["task_assignee_id"] = parsed["assignee_id"]
+        context.user_data["task_assignee_username"] = parsed["assignee_username"]
+        
+        assignee_name = f"@{parsed['assignee_username']}" if parsed.get('assignee_username') else "ты"
+        await update.message.reply_text(
+            f"📌 *{parsed['task']}*\n"
+            f"👤 {assignee_name}\n\n"
+            "📅 Когда? (завтра, каждый понедельник...)",
+            parse_mode="Markdown"
+        )
+        return States.TASK_DEADLINE
+    
+    if not parsed.get("assignee_id"):
         await update.message.reply_text(
             "Кто исполнитель? Укажи ответным сообщением @username"
         )
