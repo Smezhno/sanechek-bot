@@ -146,11 +146,49 @@ async def receive_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return States.TASK_TEXT
     
     chat_id = context.user_data["task_chat_id"]
+    author_id = context.user_data["task_author_id"]
     
     # Try to parse task with LLM
-    parsed = await _smart_parse_task(text, chat_id)
+    parsed = await _smart_parse_task(text, chat_id, author_id)
     
     context.user_data["task_text"] = parsed["task"][:settings.max_task_length]
+    
+    # Handle self-assignment ("мне нужно...")
+    if parsed.get("is_self") and not parsed.get("assignee_id"):
+        async with get_session() as session:
+            result = await session.execute(select(User).where(User.id == author_id))
+            author = result.scalar_one_or_none()
+            if author:
+                context.user_data["task_assignee_id"] = author_id
+                context.user_data["task_assignee_username"] = author.username
+                
+                # Check if deadline was also parsed
+                if parsed.get("deadline"):
+                    context.user_data["task_deadline"] = parsed["deadline"]
+                    # Ask about recurrence
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Каждый день", callback_data="recurrence:daily")],
+                        [InlineKeyboardButton("📅 Пн-Пт", callback_data="recurrence:weekdays")],
+                        [InlineKeyboardButton("📆 Каждую неделю", callback_data="recurrence:weekly")],
+                        [InlineKeyboardButton("🗓️ Каждый месяц", callback_data="recurrence:monthly")],
+                        [InlineKeyboardButton("➡️ Без повтора", callback_data="recurrence:none")],
+                    ])
+                    await update.message.reply_text(
+                        f"📌 *{parsed['task']}*\n"
+                        f"👤 Исполнитель: ты\n\n"
+                        "🔄 Повторять задачу?",
+                        parse_mode="Markdown",
+                        reply_markup=keyboard
+                    )
+                    return States.TASK_RECURRENCE
+                else:
+                    await update.message.reply_text(
+                        f"📌 *{parsed['task']}*\n"
+                        f"👤 Исполнитель: ты\n\n"
+                        "Какой дедлайн? (например: завтра, в пятницу, 15.02)",
+                        parse_mode="Markdown"
+                    )
+                    return States.TASK_DEADLINE
     
     # Check if multiple candidates found
     if parsed.get("multiple_candidates") and len(parsed["multiple_candidates"]) > 1:
@@ -193,7 +231,7 @@ async def receive_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return States.TASK_ASSIGNEE
 
 
-async def _smart_parse_task(text: str, chat_id: int) -> dict:
+async def _smart_parse_task(text: str, chat_id: int, author_id: int = None) -> dict:
     """Parse task text using LLM to extract assignee and deadline."""
     from llm.client import ask_llm
     
@@ -203,7 +241,18 @@ async def _smart_parse_task(text: str, chat_id: int) -> dict:
         "assignee_username": None,
         "assignee_name": None,
         "deadline": None,
+        "is_self": False,
     }
+    
+    # Check for self-assignment keywords
+    self_keywords = ["мне ", "мне,", "себе ", "я должен", "я должна", "мне нужно", "мне надо"]
+    text_lower = text.lower()
+    for keyword in self_keywords:
+        if keyword in text_lower:
+            result["is_self"] = True
+            # Remove the keyword from task text
+            result["task"] = re.sub(rf"(?i){keyword.strip()}\s*", "", text).strip()
+            break
     
     # First check for @username in text
     username_match = re.search(r"@(\w+)", text)
@@ -218,6 +267,7 @@ async def _smart_parse_task(text: str, chat_id: int) -> dict:
                 result["assignee_id"] = user.id
                 result["assignee_username"] = username
                 result["task"] = text.replace(f"@{username}", "").strip()
+                result["is_self"] = False  # @username overrides "мне"
     
     # If no @username, try to extract name with LLM
     if not result["assignee_id"] and (settings.yandex_gpt_api_key or settings.openai_api_key):
