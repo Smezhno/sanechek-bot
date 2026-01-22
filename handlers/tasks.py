@@ -395,7 +395,7 @@ async def receive_task_assignee(update: Update, context: ContextTypes.DEFAULT_TY
                     )
                     return States.TASK_ASSIGNEE
                 
-                # No match by name - try LLM for nicknames
+                # No match by name in local DB - try LLM for nicknames
                 from llm.client import ask_llm
                 members_list = ", ".join([
                     f"{m.first_name or ''} {m.last_name or ''} (@{m.username})" 
@@ -433,6 +433,44 @@ async def receive_task_assignee(update: Update, context: ContextTypes.DEFAULT_TY
                                 return States.TASK_DEADLINE
                 except Exception:
                     pass
+    
+    # Last resort - if text looks like username, try to verify via Telegram API
+    potential_username = text.strip().replace("@", "")
+    if potential_username and potential_username.isalnum():
+        try:
+            # Try to get chat member by username - this will work if user is in chat
+            chat_member = await context.bot.get_chat_member(chat_id, f"@{potential_username}")
+            if chat_member and chat_member.user:
+                user = chat_member.user
+                # Save to database for future
+                async with get_session() as session:
+                    db_user = await get_or_create_user(
+                        session, user.id,
+                        username=user.username,
+                        first_name=user.first_name,
+                        last_name=user.last_name
+                    )
+                    # Add to chat members
+                    existing = await session.execute(
+                        select(ChatMember).where(
+                            ChatMember.chat_id == chat_id,
+                            ChatMember.user_id == user.id
+                        )
+                    )
+                    if not existing.scalar_one_or_none():
+                        session.add(ChatMember(chat_id=chat_id, user_id=user.id))
+                        await session.commit()
+                
+                context.user_data["task_assignee_id"] = user.id
+                context.user_data["task_assignee_username"] = user.username or potential_username
+                
+                await update.message.reply_text(
+                    f"👤 Исполнитель: @{user.username or potential_username}\n\n"
+                    "Какой дедлайн? (например: завтра, в пятницу, 15.02)"
+                )
+                return States.TASK_DEADLINE
+        except Exception:
+            pass
     
     await update.message.reply_text(
         "Не нашёл такого пользователя в чате. Укажи @username"
