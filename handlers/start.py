@@ -1,13 +1,22 @@
 """Start, help, and basic command handlers."""
+import logging
 from datetime import datetime
-from telegram import Update
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import ContextTypes, ConversationHandler
+from sqlalchemy import select
 
 from database import get_session, User, Chat, ChatMember, Message
 from utils.permissions import get_or_create_user
-from sqlalchemy import select
-
 from config import settings
+
+logger = logging.getLogger(__name__)
+
+# Message constants
+MSG_CANCELLED = "Отменено"
+MSG_NOTHING_TO_CANCEL = "Нечего отменять"
+MSG_SUBSCRIBE_HINT = "Используй /subscribe, чтобы настроить, по каким чатам получать саммари"
+MSG_OPEN_APP = "📱 Открой веб-интерфейс:"
 
 
 # Welcome messages
@@ -72,28 +81,21 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     
     await update.message.reply_text(WELCOME_DM)
-    
+
     # Suggest subscription setup
-    await update.message.reply_text(
-        "Используй /subscribe, чтобы настроить, по каким чатам получать саммари"
-    )
+    await update.message.reply_text(MSG_SUBSCRIBE_HINT)
 
 
 async def app_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /app command - open Mini App."""
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-    
     web_app_button = InlineKeyboardButton(
         text="🚀 Открыть приложение",
         web_app=WebAppInfo(url=settings.mini_app_url)
     )
-    
+
     keyboard = InlineKeyboardMarkup([[web_app_button]])
-    
-    await update.message.reply_text(
-        "📱 Открой веб-интерфейс:",
-        reply_markup=keyboard
-    )
+
+    await update.message.reply_text(MSG_OPEN_APP, reply_markup=keyboard)
 
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -112,10 +114,10 @@ async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Check if we're in a conversation
     if context.user_data.get("in_conversation"):
         context.user_data.clear()
-        await update.message.reply_text("Отменено")
+        await update.message.reply_text(MSG_CANCELLED)
         return ConversationHandler.END
     else:
-        await update.message.reply_text("Нечего отменять")
+        await update.message.reply_text(MSG_NOTHING_TO_CANCEL)
         return ConversationHandler.END
 
 

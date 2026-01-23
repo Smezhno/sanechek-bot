@@ -1,6 +1,8 @@
 """Reminder handlers."""
+import logging
 import re
 from datetime import datetime
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from sqlalchemy import select
@@ -10,6 +12,21 @@ from utils.date_parser import parse_reminder_time, DateParseError
 from utils.formatters import format_date, format_reminder_short
 from utils.permissions import get_or_create_user, can_cancel_reminder
 from config import settings
+
+logger = logging.getLogger(__name__)
+
+# Message constants
+MSG_REMIND_WHAT = "О чём напомнить?"
+MSG_REMIND_WHEN = (
+    'Не понял, когда напомнить. Укажи время, например: '
+    '"через 30 минут", "завтра в 15:00", "в пятницу"'
+)
+MSG_NO_ACTIVE_REMINDERS = "🔔 Активных напоминаний нет"
+MSG_NO_REMINDERS_TO_CANCEL = "Нет напоминаний для отмены"
+MSG_REMINDER_NOT_FOUND = "Напоминание не найдено"
+MSG_REMINDER_NOT_ACTIVE = "Это напоминание уже не активно"
+MSG_CANCEL_NO_PERMISSION = "Отменить может только автор, получатель или админ"
+MSG_SELECT_TO_CANCEL = "Выбери напоминание для отмены:"
 
 
 async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -32,7 +49,7 @@ async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     reminder_text = text[match.end():].strip()
     
     if not reminder_text:
-        await message.reply_text("О чём напомнить?")
+        await message.reply_text(MSG_REMIND_WHAT)
         return
     
     async with get_session() as session:
@@ -100,10 +117,7 @@ async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 break
         
         if not time_text:
-            await message.reply_text(
-                "Не понял, когда напомнить. Укажи время, например: "
-                "\"через 30 минут\", \"завтра в 15:00\", \"в пятницу\""
-            )
+            await message.reply_text(MSG_REMIND_WHEN)
             return
         
         try:
@@ -124,7 +138,7 @@ async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         reminder_content = " ".join(reminder_content.split()).strip()
         
         if not reminder_content:
-            await message.reply_text("О чём напомнить?")
+            await message.reply_text(MSG_REMIND_WHAT)
             return
         
         # Create reminder
@@ -172,9 +186,9 @@ async def reminders_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             reminders = result.scalars().all()
             
             if not reminders:
-                await update.message.reply_text("🔔 Активных напоминаний нет")
+                await update.message.reply_text(MSG_NO_ACTIVE_REMINDERS)
                 return
-            
+
             lines = ["🔔 Напоминания в этом чате:\n"]
             
             for i, reminder in enumerate(reminders, 1):
@@ -218,9 +232,9 @@ async def reminders_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             reminders = result.scalars().all()
             
             if not reminders:
-                await update.message.reply_text("🔔 Активных напоминаний нет")
+                await update.message.reply_text(MSG_NO_ACTIVE_REMINDERS)
                 return
-            
+
             # Group by chat
             by_chat = {}
             for reminder in reminders:
@@ -289,9 +303,9 @@ async def _show_cancel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         reminders = result.scalars().all()
         
         if not reminders:
-            await query.edit_message_text("Нет напоминаний для отмены")
+            await query.edit_message_text(MSG_NO_REMINDERS_TO_CANCEL)
             return
-        
+
         buttons = []
         for reminder in reminders:
             text_preview = reminder.text[:30] + "..." if len(reminder.text) > 30 else reminder.text
@@ -308,7 +322,7 @@ async def _show_cancel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         keyboard = InlineKeyboardMarkup(buttons)
         await query.edit_message_text(
-            "Выбери напоминание для отмены:",
+            MSG_SELECT_TO_CANCEL,
             reply_markup=keyboard
         )
 
@@ -329,19 +343,16 @@ async def _cancel_reminder(
         reminder = result.scalar_one_or_none()
         
         if not reminder:
-            await query.edit_message_text("Напоминание не найдено")
+            await query.edit_message_text(MSG_REMINDER_NOT_FOUND)
             return
-        
+
         if reminder.status != ReminderStatus.PENDING:
-            await query.edit_message_text("Это напоминание уже не активно")
+            await query.edit_message_text(MSG_REMINDER_NOT_ACTIVE)
             return
-        
+
         # Check permissions
         if not await can_cancel_reminder(session, user_id, reminder):
-            await query.answer(
-                "Отменить может только автор, получатель или админ",
-                show_alert=True
-            )
+            await query.answer(MSG_CANCEL_NO_PERMISSION, show_alert=True)
             return
         
         # Cancel reminder
@@ -394,10 +405,13 @@ async def send_reminder(
                 chat_id=reminder.chat_id,
                 text=text
             )
-            
+
             reminder.status = ReminderStatus.SENT
             reminder.sent_at = datetime.utcnow()
-        except Exception:
+        except Exception as e:
             # Chat might be unavailable
-            pass
+            logger.debug(
+                "Failed to send reminder %s to chat %s: %s",
+                reminder.id, reminder.chat_id, e
+            )
 

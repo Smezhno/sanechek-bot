@@ -1,8 +1,10 @@
 """LLM-based message summarization."""
-from typing import List
+import logging
 
 from config import settings
 from llm.client import ask_llm
+
+logger = logging.getLogger(__name__)
 
 
 SUMMARY_SYSTEM_PROMPT = """Ты — ассистент, который создаёт развёрнутые саммари рабочих переписок.
@@ -41,32 +43,32 @@ SUMMARY_SYSTEM_PROMPT = """Ты — ассистент, который созд�
 Язык: русский"""
 
 
-async def summarize_messages(messages: List[str], max_tokens: int = 1500) -> str:
+async def summarize_messages(messages: list[str], max_tokens: int = 1500) -> str:
     """
     Summarize a list of chat messages using LLM.
-    
+
     Args:
         messages: List of formatted messages ("@user: text")
         max_tokens: Maximum tokens in response
-    
+
     Returns:
         Summary text
     """
     if not messages:
         return "Переписок не было."
-    
+
     # Check if any API key is configured
     if not settings.openai_api_key and not settings.yandex_gpt_api_key:
         return _fallback_summary(messages)
-    
+
     # Combine messages
     conversation = "\n".join(messages)
-    
+
     # Limit input length (rough estimate: 4 chars per token)
     max_input_chars = 8000  # Reduced for YandexGPT limits
     if len(conversation) > max_input_chars:
         conversation = conversation[:max_input_chars] + "\n...(сообщения обрезаны)"
-    
+
     try:
         summary = await ask_llm(
             question=f"Создай саммари этой переписки:\n\n{conversation}",
@@ -75,13 +77,14 @@ async def summarize_messages(messages: List[str], max_tokens: int = 1500) -> str
             temperature=0.3
         )
         return summary
-    
+
     except Exception as e:
         # Fallback to simple summary on error
+        logger.warning("LLM summarization failed: %s", e)
         return _fallback_summary(messages)
 
 
-def _fallback_summary(messages: List[str]) -> str:
+def _fallback_summary(messages: list[str]) -> str:
     """Create a simple fallback summary without LLM."""
     if not messages:
         return "Переписок не было."

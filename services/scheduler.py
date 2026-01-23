@@ -1,11 +1,29 @@
 """Scheduler for automatic reminders and summaries."""
+import logging
 from datetime import datetime, time, timedelta
+
 import pytz
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application
+from sqlalchemy import select
 
 from config import settings
-from database import get_session, Reminder, Task, ReminderStatus, TaskStatus
-from sqlalchemy import select
+from database import get_session, Reminder, Task, User, Chat, ReminderStatus, TaskStatus
+from handlers.reminders import send_reminder
+from handlers.summary import send_daily_summaries
+from utils.formatters import format_date
+
+logger = logging.getLogger(__name__)
+
+
+def _build_task_reminder_keyboard(task_id: int) -> InlineKeyboardMarkup:
+    """Build keyboard with task actions for reminder messages."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Закрыть", callback_data=f"task:close:{task_id}"),
+            InlineKeyboardButton("✏️ Редактировать", callback_data=f"task:edit:{task_id}"),
+        ]
+    ])
 
 
 def setup_scheduler(app: Application) -> None:
@@ -49,14 +67,11 @@ def setup_scheduler(app: Application) -> None:
 
 async def send_daily_summaries_job(context) -> None:
     """Job to send daily summaries."""
-    from handlers.summary import send_daily_summaries
     await send_daily_summaries(context)
 
 
 async def check_reminders_job(context) -> None:
     """Job to check and send due reminders."""
-    from handlers.reminders import send_reminder
-    
     now = datetime.utcnow()
     
     async with get_session() as session:
@@ -76,11 +91,9 @@ async def check_reminders_job(context) -> None:
 
 async def check_task_deadlines_job(context) -> None:
     """Job to send reminders for tasks approaching deadline."""
-    from database import User, Chat
-    
     now = datetime.utcnow()
     reminder_threshold = now + timedelta(hours=settings.task_reminder_hours_before)
-    
+
     async with get_session() as session:
         # Get tasks with deadline approaching
         result = await session.execute(
@@ -93,48 +106,41 @@ async def check_task_deadlines_job(context) -> None:
             )
         )
         tasks = result.scalars().all()
-        
+
         for task in tasks:
             # Get assignee
             result = await session.execute(
                 select(User).where(User.id == task.assignee_id)
             )
             assignee = result.scalar_one_or_none()
-            
+
             if not assignee:
                 continue
-            
+
             # Get chat
             result = await session.execute(
                 select(Chat).where(Chat.id == task.chat_id)
             )
             chat = result.scalar_one_or_none()
-            
+
             if not chat:
                 continue
-            
+
             # Calculate time until deadline
             time_left = task.deadline - now
             hours_left = int(time_left.total_seconds() / 3600)
-            
-            from utils.formatters import format_date
+
             deadline_str = format_date(task.deadline, include_time=True)
-            
+
             text = (
                 f"⏰ Напоминание!\n\n"
                 f"Задача: {task.text}\n"
                 f"Чат: {chat.title}\n"
                 f"Дедлайн: через {hours_left} ч. ({deadline_str})"
             )
-            
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Закрыть", callback_data=f"task:close:{task.id}"),
-                    InlineKeyboardButton("✏️ Редактировать", callback_data=f"task:edit:{task.id}"),
-                ]
-            ])
-            
+
+            keyboard = _build_task_reminder_keyboard(task.id)
+
             try:
                 await context.bot.send_message(
                     chat_id=assignee.id,
@@ -142,17 +148,15 @@ async def check_task_deadlines_job(context) -> None:
                     reply_markup=keyboard
                 )
                 task.reminder_sent = True
-            except Exception:
+            except Exception as e:
                 # User might have blocked the bot
-                pass
+                logger.debug("Failed to send task reminder to user %s: %s", assignee.id, e)
 
 
 async def send_overdue_reminders_job(context) -> None:
     """Job to send reminders about overdue tasks."""
-    from database import User, Chat
-    
     now = datetime.utcnow()
-    
+
     async with get_session() as session:
         # Get overdue tasks
         result = await session.execute(
@@ -163,59 +167,53 @@ async def send_overdue_reminders_job(context) -> None:
             )
         )
         tasks = result.scalars().all()
-        
+
         for task in tasks:
             # Get assignee
             result = await session.execute(
                 select(User).where(User.id == task.assignee_id)
             )
             assignee = result.scalar_one_or_none()
-            
+
             if not assignee:
                 continue
-            
+
             # Get chat
             result = await session.execute(
                 select(Chat).where(Chat.id == task.chat_id)
             )
             chat = result.scalar_one_or_none()
-            
+
             if not chat:
                 continue
-            
+
             # Calculate overdue time
             overdue_time = now - task.deadline
             days_overdue = overdue_time.days
-            
+
             if days_overdue == 0:
                 overdue_str = "сегодня"
             elif days_overdue == 1:
                 overdue_str = "на 1 день"
             else:
                 overdue_str = f"на {days_overdue} дней"
-            
+
             text = (
                 f"⚠️ Просроченная задача!\n\n"
                 f"Задача: {task.text}\n"
                 f"Чат: {chat.title}\n"
                 f"Дедлайн: просрочен {overdue_str}"
             )
-            
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Закрыть", callback_data=f"task:close:{task.id}"),
-                    InlineKeyboardButton("✏️ Редактировать", callback_data=f"task:edit:{task.id}"),
-                ]
-            ])
-            
+
+            keyboard = _build_task_reminder_keyboard(task.id)
+
             try:
                 await context.bot.send_message(
                     chat_id=assignee.id,
                     text=text,
                     reply_markup=keyboard
                 )
-            except Exception:
+            except Exception as e:
                 # User might have blocked the bot
-                pass
+                logger.debug("Failed to send overdue reminder to user %s: %s", assignee.id, e)
 
