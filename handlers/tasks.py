@@ -4,6 +4,7 @@ import re
 from datetime import datetime, date, timedelta
 from typing import Optional, TypedDict
 
+import pytz
 from dateutil.relativedelta import relativedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -1671,6 +1672,11 @@ async def _process_reminder_edit(
     # Try to parse as new time
     try:
         new_time = parse_deadline(args_clean)
+        
+        # Convert to UTC if timezone-aware
+        if new_time.tzinfo is not None:
+            new_time = new_time.astimezone(pytz.UTC).replace(tzinfo=None)
+        
         reminder.remind_at = new_time
         
         response = f'✏️ Напоминание изменено:\n"{reminder.text}"\n'

@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timedelta
 from typing import TypedDict, Optional
 
+import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from sqlalchemy import select
@@ -15,6 +16,13 @@ from utils.permissions import get_or_create_user, can_cancel_reminder
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _to_utc(dt: datetime) -> datetime:
+    """Convert datetime to UTC naive datetime for database storage."""
+    if dt.tzinfo is not None:
+        return dt.astimezone(pytz.UTC).replace(tzinfo=None)
+    return dt
 
 # Constants
 PENDING_HASH_MODULO = 10000
@@ -236,7 +244,7 @@ async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             author_id=user.id,
             recipient_id=recipient_id,
             text=reminder_content,
-            remind_at=remind_at,
+            remind_at=_to_utc(remind_at),
             command_message_id=message.message_id,  # Save command message ID
         )
         session.add(reminder)
@@ -428,7 +436,7 @@ async def _handle_time_selection(
             author_id=pending["author_id"],
             recipient_id=pending["recipient_id"],
             text=pending["text"],
-            remind_at=remind_at,
+            remind_at=_to_utc(remind_at),
         )
         session.add(reminder)
         await session.flush()
@@ -487,7 +495,7 @@ async def reminder_time_input_handler(
             author_id=pending["author_id"],
             recipient_id=pending["recipient_id"],
             text=pending["text"],
-            remind_at=remind_at,
+            remind_at=_to_utc(remind_at),
         )
         session.add(reminder)
         await session.flush()
