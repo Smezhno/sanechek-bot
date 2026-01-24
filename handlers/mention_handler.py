@@ -229,13 +229,22 @@ def _parse_mention_fallback(text: str) -> ParsedMention:
     # Check for self-assignment patterns
     confidence = 0.5
     self_patterns = [
-        r"\bмне\s+надо\b", r"\bя\s+должен\b", r"\bя\s+куплю\b",
-        r"\bя\s+сделаю\b", r"\bмне\s+нужно\b"
+        # Strong patterns (high confidence)
+        (r"\bмне\s+надо\b", 0.8),
+        (r"\bя\s+должен\b", 0.8),
+        (r"\bя\s+куплю\b", 0.8),
+        (r"\bя\s+сделаю\b", 0.8),
+        (r"\bмне\s+нужно\b", 0.8),
+        (r"\bнадо\s+мне\b", 0.8),
+        # Weaker patterns (moderate confidence)
+        (r"\bмне$", 0.7),  # "мне" at end of text
+        (r"\bсебе\b", 0.7),
+        (r"\bдля\s+себя\b", 0.8),
     ]
-    for pattern in self_patterns:
+    for pattern, conf in self_patterns:
         if re.search(pattern, task_text, re.IGNORECASE):
             assignee = "я"
-            confidence = 0.8
+            confidence = conf
             break
 
     # Extract recurrence
@@ -443,134 +452,141 @@ async def mention_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = update.effective_user
     chat = update.effective_chat
 
-    # Extract text after mention
-    mention_text = _extract_mention_text(text)
-    if not mention_text:
-        await message.reply_text(MSG_TASK_NO_TEXT)
-        return
+    logger.info(f"mention_handler called: chat={chat.id}, user={user.id}, text={text[:50]}")
 
-    is_dm = chat.type == "private"
-
-    async with get_session() as session:
-        # Ensure user and chat exist
-        await get_or_create_user(
-            session, user.id,
-            username=user.username,
-            first_name=user.first_name,
-            last_name=user.last_name
-        )
-
-        if not is_dm:
-            result = await session.execute(select(Chat).where(Chat.id == chat.id))
-            db_chat = result.scalar_one_or_none()
-            if not db_chat:
-                db_chat = Chat(id=chat.id, title=chat.title, is_active=True)
-                session.add(db_chat)
-
-        # Get chat members for context
-        members_str = "личное сообщение"
-        if not is_dm:
-            members = await get_chat_members_cached(chat.id, session)
-            members_str = ", ".join([m.display_name for m in members[:10]])
-
-        # Parse mention with LLM or fallback
-        if _has_api_key():
-            parsed = await _parse_mention_with_llm(
-                mention_text,
-                members_str,
-                "dm" if is_dm else "group"
-            )
-        else:
-            parsed = _parse_mention_fallback(mention_text)
-
-        # Get task text
-        task_text = parsed.get("task", mention_text)
-        if not task_text:
-            task_text = mention_text
-
-        # Parse recurrence
-        recurrence = _recurrence_from_string(parsed.get("recurrence", "none"))
-
-        # Parse deadline if provided
-        deadline = None
-        deadline_str = parsed.get("deadline")
-        if deadline_str:
-            try:
-                deadline = parse_deadline(deadline_str)
-            except DateParseError:
-                pass
-
-        # Resolve assignee
-        if is_dm:
-            assignee_id, assignee_name, needs_buttons = await _resolve_assignee_dm(
-                parsed, user.id, session
-            )
-        else:
-            assignee_id, assignee_name, needs_buttons = await _resolve_assignee_group(
-                parsed, user.id, chat.id, session
-            )
-
-        # If assignee_id resolved, get their name
-        if assignee_id and not assignee_name:
-            result = await session.execute(select(User).where(User.id == assignee_id))
-            assignee_user = result.scalar_one_or_none()
-            if assignee_user:
-                assignee_name = assignee_user.display_name
-
-        # Generate hash for pending data
-        task_hash = _compute_hash(f"{chat.id}:{user.id}:{task_text}")
-
-        # Store pending data
-        pending_data: PendingTaskData = {
-            "text": task_text,
-            "assignee_id": assignee_id,
-            "assignee_name": assignee_name,
-            "deadline": deadline,
-            "recurrence": recurrence,
-            "chat_id": chat.id,
-            "author_id": user.id,
-            "is_dm": is_dm,
-        }
-        _store_pending_data(context, task_hash, pending_data)
-
-        # Need to choose assignee?
-        if needs_buttons:
-            matches = []
-            assignee_text = parsed.get("assignee")
-            if assignee_text and assignee_text not in ["я", None]:
-                matches = await find_members_by_name(chat.id, assignee_text, session)
-
-            author_name = user.first_name or user.username or "Мне"
-            keyboard = _build_assignee_buttons(task_hash, user.id, author_name, matches)
-
-            await message.reply_text(
-                f"📌 {task_text}\n\n👤 Кто исполнитель?",
-                reply_markup=keyboard
-            )
+    try:
+        # Extract text after mention
+        mention_text = _extract_mention_text(text)
+        if not mention_text:
+            await message.reply_text(MSG_TASK_NO_TEXT)
             return
 
-        # Need deadline and don't have one?
-        if deadline is None:
-            keyboard = _build_deadline_buttons(task_hash)
-            display_assignee = assignee_name or "Без исполнителя"
+        is_dm = chat.type == "private"
 
-            await message.reply_text(
-                f"📌 {task_text}\n"
-                f"👤 {display_assignee}\n\n"
-                f"{MSG_ASK_DEADLINE}",
-                reply_markup=keyboard
+        async with get_session() as session:
+            # Ensure user and chat exist
+            await get_or_create_user(
+                session, user.id,
+                username=user.username,
+                first_name=user.first_name,
+                last_name=user.last_name
             )
-            context.user_data["mention_waiting_deadline"] = task_hash
-            return
 
-        # Have everything - create task immediately
-        task = await _create_task(session, pending_data)
+            if not is_dm:
+                result = await session.execute(select(Chat).where(Chat.id == chat.id))
+                db_chat = result.scalar_one_or_none()
+                if not db_chat:
+                    db_chat = Chat(id=chat.id, title=chat.title, is_active=True)
+                    session.add(db_chat)
 
-        confirmation = _format_task_confirmation(
-            task_text, assignee_name, deadline, recurrence
-        )
-        await message.reply_text(confirmation)
-        _delete_pending_data(context, task_hash)
+            # Get chat members for context
+            members_str = "личное сообщение"
+            if not is_dm:
+                members = await get_chat_members_cached(chat.id, session)
+                members_str = ", ".join([m.display_name for m in members[:10]])
+
+            # Parse mention with LLM or fallback
+            if _has_api_key():
+                parsed = await _parse_mention_with_llm(
+                    mention_text,
+                    members_str,
+                    "dm" if is_dm else "group"
+                )
+            else:
+                parsed = _parse_mention_fallback(mention_text)
+
+            # Get task text
+            task_text = parsed.get("task", mention_text)
+            if not task_text:
+                task_text = mention_text
+
+            # Parse recurrence
+            recurrence = _recurrence_from_string(parsed.get("recurrence", "none"))
+
+            # Parse deadline if provided
+            deadline = None
+            deadline_str = parsed.get("deadline")
+            if deadline_str:
+                try:
+                    deadline = parse_deadline(deadline_str)
+                except DateParseError:
+                    pass
+
+            # Resolve assignee
+            if is_dm:
+                assignee_id, assignee_name, needs_buttons = await _resolve_assignee_dm(
+                    parsed, user.id, session
+                )
+            else:
+                assignee_id, assignee_name, needs_buttons = await _resolve_assignee_group(
+                    parsed, user.id, chat.id, session
+                )
+
+            # If assignee_id resolved, get their name
+            if assignee_id and not assignee_name:
+                result = await session.execute(select(User).where(User.id == assignee_id))
+                assignee_user = result.scalar_one_or_none()
+                if assignee_user:
+                    assignee_name = assignee_user.display_name
+
+            # Generate hash for pending data
+            task_hash = _compute_hash(f"{chat.id}:{user.id}:{task_text}")
+
+            # Store pending data
+            pending_data: PendingTaskData = {
+                "text": task_text,
+                "assignee_id": assignee_id,
+                "assignee_name": assignee_name,
+                "deadline": deadline,
+                "recurrence": recurrence,
+                "chat_id": chat.id,
+                "author_id": user.id,
+                "is_dm": is_dm,
+            }
+            _store_pending_data(context, task_hash, pending_data)
+
+            # Need to choose assignee?
+            if needs_buttons:
+                matches = []
+                assignee_text = parsed.get("assignee")
+                if assignee_text and assignee_text not in ["я", None]:
+                    matches = await find_members_by_name(chat.id, assignee_text, session)
+
+                author_name = user.first_name or user.username or "Мне"
+                keyboard = _build_assignee_buttons(task_hash, user.id, author_name, matches)
+
+                await message.reply_text(
+                    f"📌 {task_text}\n\n👤 Кто исполнителя?",
+                    reply_markup=keyboard
+                )
+                return
+
+            # Need deadline and don't have one?
+            if deadline is None:
+                keyboard = _build_deadline_buttons(task_hash)
+                display_assignee = assignee_name or "Без исполнителя"
+
+                await message.reply_text(
+                    f"📌 {task_text}\n"
+                    f"👤 {display_assignee}\n\n"
+                    f"{MSG_ASK_DEADLINE}",
+                    reply_markup=keyboard
+                )
+                context.user_data["mention_waiting_deadline"] = task_hash
+                return
+
+            # Have everything - create task immediately
+            task = await _create_task(session, pending_data)
+
+            confirmation = _format_task_confirmation(
+                task_text, assignee_name, deadline, recurrence
+            )
+            await message.reply_text(confirmation)
+            _delete_pending_data(context, task_hash)
+
+    except Exception as e:
+        logger.exception(f"Error in mention_handler: {e}")
+        await message.reply_text("❌ Произошла ошибка при создании задачи. Попробуйте ещё раз.")
 
 
 async def mention_callback_handler(
