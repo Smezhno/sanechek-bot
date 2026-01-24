@@ -1262,91 +1262,91 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         chat_id = update.effective_chat.id if chat_type != "private" else None
 
         async with get_session() as session:
-        if chat_id:
-            # In group - show tasks in this chat only
-            result = await session.execute(
-                select(Task)
-                .where(
-                    Task.assignee_id == user_id,
-                    Task.chat_id == chat_id,
-                    Task.status == TaskStatus.OPEN
-                )
-                .order_by(Task.deadline)
-            )
-            tasks = result.scalars().all()
-
-            if not tasks:
-                await update.message.reply_text(MSG_NO_YOUR_TASKS_IN_CHAT)
-                return
-
-            lines = ["📋 Твои задачи в этом чате:\n"]
-
-            for i, task in enumerate(tasks, 1):
-                deadline_str = format_date(task.deadline)
-                overdue = " ⚠️ просрочена" if task.is_overdue else ""
-                lines.append(f"{i}. {task.text} | Дедлайн: {deadline_str}{overdue}")
-
-            await update.message.reply_text("\n".join(lines))
-        else:
-            # In DM - show all tasks grouped by chat
-            result = await session.execute(
-                select(Task)
-                .where(
-                    Task.assignee_id == user_id,
-                    Task.status == TaskStatus.OPEN
-                )
-                .order_by(Task.deadline)
-            )
-            tasks = result.scalars().all()
-
-            if not tasks:
-                await update.message.reply_text(MSG_NO_YOUR_TASKS)
-                return
-
-            # Group by chat
-            by_chat = {}
-            for task in tasks:
-                if task.chat_id not in by_chat:
-                    by_chat[task.chat_id] = []
-                by_chat[task.chat_id].append(task)
-
-            # Send each task as separate message with buttons
-            for task_chat_id, chat_tasks in by_chat.items():
+            if chat_id:
+                # In group - show tasks in this chat only
                 result = await session.execute(
-                    select(Chat).where(Chat.id == task_chat_id)
+                    select(Task)
+                    .where(
+                        Task.assignee_id == user_id,
+                        Task.chat_id == chat_id,
+                        Task.status == TaskStatus.OPEN
+                    )
+                    .order_by(Task.deadline)
                 )
-                chat = result.scalar_one_or_none()
-                chat_title = chat.title if chat else f"Чат {task_chat_id}"
+                tasks = result.scalars().all()
 
-                for task in chat_tasks:
-                    result = await session.execute(
-                        select(User).where(User.id == task.author_id)
-                    )
-                    author = result.scalar_one()
+                if not tasks:
+                    await update.message.reply_text(MSG_NO_YOUR_TASKS_IN_CHAT)
+                    return
 
+                lines = ["📋 Твои задачи в этом чате:\n"]
+
+                for i, task in enumerate(tasks, 1):
                     deadline_str = format_date(task.deadline)
-                    overdue = "\n⚠️ Просрочена!" if task.is_overdue else ""
+                    overdue = " ⚠️ просрочена" if task.is_overdue else ""
+                    lines.append(f"{i}. {task.text} | Дедлайн: {deadline_str}{overdue}")
 
-                    text = (
-                        f"📌 {task.text}\n"
-                        f"Чат: {chat_title}\n"
-                        f"Автор: {author.display_name}\n"
-                        f"Дедлайн: {deadline_str}{overdue}"
+                await update.message.reply_text("\n".join(lines))
+            else:
+                # In DM - show all tasks grouped by chat
+                result = await session.execute(
+                    select(Task)
+                    .where(
+                        Task.assignee_id == user_id,
+                        Task.status == TaskStatus.OPEN
                     )
+                    .order_by(Task.deadline)
+                )
+                tasks = result.scalars().all()
 
-                    keyboard = _build_task_action_keyboard(task.id)
-                    await update.message.reply_text(text, reply_markup=keyboard)
+                if not tasks:
+                    await update.message.reply_text(MSG_NO_YOUR_TASKS)
+                    return
 
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "📋 Показать закрытые задачи",
-                    callback_data="task:show_closed"
-                )]
-            ])
-            await update.message.reply_text(
-                "Это все твои активные задачи.",
-                reply_markup=keyboard
-            )
+                # Group by chat
+                by_chat = {}
+                for task in tasks:
+                    if task.chat_id not in by_chat:
+                        by_chat[task.chat_id] = []
+                    by_chat[task.chat_id].append(task)
+
+                # Send each task as separate message with buttons
+                for task_chat_id, chat_tasks in by_chat.items():
+                    result = await session.execute(
+                        select(Chat).where(Chat.id == task_chat_id)
+                    )
+                    chat = result.scalar_one_or_none()
+                    chat_title = chat.title if chat else f"Чат {task_chat_id}"
+
+                    for task in chat_tasks:
+                        result = await session.execute(
+                            select(User).where(User.id == task.author_id)
+                        )
+                        author = result.scalar_one()
+
+                        deadline_str = format_date(task.deadline)
+                        overdue = "\n⚠️ Просрочена!" if task.is_overdue else ""
+
+                        text = (
+                            f"📌 {task.text}\n"
+                            f"Чат: {chat_title}\n"
+                            f"Автор: {author.display_name}\n"
+                            f"Дедлайн: {deadline_str}{overdue}"
+                        )
+
+                        keyboard = _build_task_action_keyboard(task.id)
+                        await update.message.reply_text(text, reply_markup=keyboard)
+
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "📋 Показать закрытые задачи",
+                        callback_data="task:show_closed"
+                    )]
+                ])
+                await update.message.reply_text(
+                    "Это все твои активные задачи.",
+                    reply_markup=keyboard
+                )
     except Exception as e:
         logger.exception(f"Error in mytasks_handler: {e}")
         await update.message.reply_text("❌ Чёт не вышло показать задачи. Попробуй позже.")
