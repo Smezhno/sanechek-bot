@@ -71,12 +71,28 @@ RECURRENCE_PATTERNS = {
         "по будням", "пн-пт", "будни", "в рабочие дни", "по рабочим дням"
     ],
     RecurrenceType.WEEKLY: [
-        "каждый понедельник", "каждый вторник", "каждую среду",
-        "каждый четверг", "каждую пятницу", "каждую субботу",
-        "каждое воскресенье", "еженедельно", "раз в неделю",
-        "по понедельникам", "по вторникам", "по средам",
-        "по четвергам", "по пятницам", "по субботам", "по воскресеньям",
-        "каждую неделю"
+        "еженедельно", "раз в неделю", "каждую неделю"
+    ],
+    RecurrenceType.WEEKLY_MONDAY: [
+        "каждый понедельник", "по понедельникам"
+    ],
+    RecurrenceType.WEEKLY_TUESDAY: [
+        "каждый вторник", "по вторникам"
+    ],
+    RecurrenceType.WEEKLY_WEDNESDAY: [
+        "каждую среду", "по средам"
+    ],
+    RecurrenceType.WEEKLY_THURSDAY: [
+        "каждый четверг", "по четвергам"
+    ],
+    RecurrenceType.WEEKLY_FRIDAY: [
+        "каждую пятницу", "по пятницам"
+    ],
+    RecurrenceType.WEEKLY_SATURDAY: [
+        "каждую субботу", "по субботам"
+    ],
+    RecurrenceType.WEEKLY_SUNDAY: [
+        "каждое воскресенье", "по воскресеньям"
     ],
     RecurrenceType.MONTHLY: [
         "каждый месяц", "ежемесячно", "раз в месяц",
@@ -111,6 +127,13 @@ def _get_recurrence_label(recurrence: str) -> str:
         "daily": "каждый день",
         "weekdays": "Пн-Пт",
         "weekly": "каждую неделю",
+        "weekly_monday": "по понедельникам",
+        "weekly_tuesday": "по вторникам",
+        "weekly_wednesday": "по средам",
+        "weekly_thursday": "по четвергам",
+        "weekly_friday": "по пятницам",
+        "weekly_saturday": "по субботам",
+        "weekly_sunday": "по воскресеньям",
         "monthly": "каждый месяц",
     }
     return labels.get(recurrence, recurrence)
@@ -123,6 +146,13 @@ def _recurrence_str_to_enum(recurrence_str: str) -> RecurrenceType:
         "daily": RecurrenceType.DAILY,
         "weekdays": RecurrenceType.WEEKDAYS,
         "weekly": RecurrenceType.WEEKLY,
+        "weekly_monday": RecurrenceType.WEEKLY_MONDAY,
+        "weekly_tuesday": RecurrenceType.WEEKLY_TUESDAY,
+        "weekly_wednesday": RecurrenceType.WEEKLY_WEDNESDAY,
+        "weekly_thursday": RecurrenceType.WEEKLY_THURSDAY,
+        "weekly_friday": RecurrenceType.WEEKLY_FRIDAY,
+        "weekly_saturday": RecurrenceType.WEEKLY_SATURDAY,
+        "weekly_sunday": RecurrenceType.WEEKLY_SUNDAY,
         "monthly": RecurrenceType.MONTHLY,
     }
     return mapping.get(recurrence_str, RecurrenceType.NONE)
@@ -1074,6 +1104,59 @@ async def _create_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 # --- Task List Handlers ---
 
+def _sort_tasks_by_urgency(tasks: list[Task]) -> list[Task]:
+    """Sort tasks by urgency: overdue -> today -> by deadline -> no deadline."""
+    now = datetime.utcnow()
+    today = now.date()
+
+    def sort_key(task: Task):
+        if task.deadline is None:
+            return (3, datetime.max)
+        if task.deadline < now:
+            return (0, task.deadline)  # overdue
+        if task.deadline.date() == today:
+            return (1, task.deadline)  # today
+        return (2, task.deadline)  # future
+
+    return sorted(tasks, key=sort_key)
+
+
+def _build_task_list_keyboard(
+    tasks: list[Task],
+    show_filters: bool = True,
+    current_filter: str = "all"
+) -> InlineKeyboardMarkup:
+    """Build keyboard with task action buttons and filters."""
+    buttons = []
+
+    # Task action buttons (max 8 tasks to fit)
+    for task in tasks[:8]:
+        text_preview = task.text[:20] + "..." if len(task.text) > 20 else task.text
+        buttons.append([
+            InlineKeyboardButton("✅", callback_data=f"task:close:{task.id}"),
+            InlineKeyboardButton(f"📌 {text_preview}", callback_data=f"task:details:{task.id}"),
+            InlineKeyboardButton("✏️", callback_data=f"task:edit:{task.id}"),
+        ])
+
+    if show_filters:
+        # Filter buttons
+        filter_buttons = []
+        filters_config = [
+            ("all", "📋 Все"),
+            ("my", "👤 Мои"),
+            ("overdue", "⚠️ Просрочки"),
+        ]
+        for filter_key, label in filters_config:
+            if filter_key == current_filter:
+                label = f"[{label}]"
+            filter_buttons.append(
+                InlineKeyboardButton(label, callback_data=f"tasks:filter:{filter_key}")
+            )
+        buttons.append(filter_buttons)
+
+    return InlineKeyboardMarkup(buttons)
+
+
 async def tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /tasks command - list active tasks in chat."""
     if update.effective_chat.type == "private":
@@ -1081,32 +1164,77 @@ async def tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    current_filter = context.user_data.get("tasks_filter", "all")
 
     async with get_session() as session:
-        result = await session.execute(
-            select(Task)
-            .where(
-                Task.chat_id == chat_id,
-                Task.status == TaskStatus.OPEN
-            )
-            .order_by(Task.deadline)
+        # Build query based on filter
+        query = select(Task).where(
+            Task.chat_id == chat_id,
+            Task.status == TaskStatus.OPEN
         )
-        tasks = result.scalars().all()
+
+        if current_filter == "my":
+            query = query.where(Task.assignee_id == user_id)
+        elif current_filter == "overdue":
+            query = query.where(Task.deadline < datetime.utcnow())
+
+        result = await session.execute(query)
+        tasks = list(result.scalars().all())
 
         if not tasks:
-            await update.message.reply_text(MSG_NO_ACTIVE_TASKS)
+            if current_filter == "all":
+                await update.message.reply_text(MSG_NO_ACTIVE_TASKS)
+            elif current_filter == "my":
+                await update.message.reply_text(MSG_NO_YOUR_TASKS_IN_CHAT)
+            else:
+                await update.message.reply_text("📋 Нет просроченных задач")
             return
 
+        # Sort by urgency
+        tasks = _sort_tasks_by_urgency(tasks)
+
+        # Build response
+        now = datetime.utcnow()
         lines = ["📋 Активные задачи:\n"]
 
-        for i, task in enumerate(tasks, 1):
-            result = await session.execute(
-                select(User).where(User.id == task.assignee_id)
-            )
-            task.assignee = result.scalar_one()
-            lines.append(f"{i}. {format_task_short(task)}\n")
+        for i, task in enumerate(tasks[:10], 1):
+            # Get assignee
+            if task.assignee_id:
+                result = await session.execute(
+                    select(User).where(User.id == task.assignee_id)
+                )
+                assignee = result.scalar_one_or_none()
+                assignee_name = assignee.display_name if assignee else "?"
+            else:
+                assignee_name = "—"
 
-        await update.message.reply_text("\n".join(lines))
+            # Format deadline
+            if task.deadline:
+                if task.deadline < now:
+                    deadline_str = f"⚠️ просрочена"
+                elif task.deadline.date() == now.date():
+                    deadline_str = f"⏰ сегодня {task.deadline.strftime('%H:%M')}"
+                else:
+                    deadline_str = format_date(task.deadline)
+            else:
+                deadline_str = "без дедлайна"
+
+            # Format recurrence
+            recurrence_str = ""
+            if task.recurrence != RecurrenceType.NONE:
+                recurrence_str = f" 🔁"
+
+            lines.append(
+                f"{i}. {task.text}\n"
+                f"   👤 {assignee_name} | 📅 {deadline_str}{recurrence_str}\n"
+            )
+
+        if len(tasks) > 10:
+            lines.append(f"\n...и ещё {len(tasks) - 10} задач")
+
+        keyboard = _build_task_list_keyboard(tasks, current_filter=current_filter)
+        await update.message.reply_text("\n".join(lines), reply_markup=keyboard)
 
 
 async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1260,7 +1388,24 @@ async def _create_next_recurring_task(session, task: Task) -> Optional[Task]:
     if task.recurrence == RecurrenceType.NONE:
         return None
 
+    # Check if recurrence is still active
+    if not task.recurrence_active:
+        return None
+
     current_deadline = task.deadline
+    if current_deadline is None:
+        return None
+
+    # Mapping of weekly_* types to target weekday (0=Monday, 6=Sunday)
+    weekly_day_map = {
+        RecurrenceType.WEEKLY_MONDAY: 0,
+        RecurrenceType.WEEKLY_TUESDAY: 1,
+        RecurrenceType.WEEKLY_WEDNESDAY: 2,
+        RecurrenceType.WEEKLY_THURSDAY: 3,
+        RecurrenceType.WEEKLY_FRIDAY: 4,
+        RecurrenceType.WEEKLY_SATURDAY: 5,
+        RecurrenceType.WEEKLY_SUNDAY: 6,
+    }
 
     if task.recurrence == RecurrenceType.DAILY:
         next_deadline = current_deadline + timedelta(days=1)
@@ -1270,6 +1415,12 @@ async def _create_next_recurring_task(session, task: Task) -> Optional[Task]:
             next_deadline += timedelta(days=1)
     elif task.recurrence == RecurrenceType.WEEKLY:
         next_deadline = current_deadline + timedelta(weeks=1)
+    elif task.recurrence in weekly_day_map:
+        # Find next occurrence of specific weekday
+        target_weekday = weekly_day_map[task.recurrence]
+        next_deadline = current_deadline + timedelta(days=1)
+        while next_deadline.weekday() != target_weekday:
+            next_deadline += timedelta(days=1)
     elif task.recurrence == RecurrenceType.MONTHLY:
         next_deadline = current_deadline + relativedelta(months=1)
     else:
@@ -1283,6 +1434,7 @@ async def _create_next_recurring_task(session, task: Task) -> Optional[Task]:
         deadline=next_deadline,
         recurrence=task.recurrence,
         parent_task_id=task.parent_task_id or task.id,
+        recurrence_active=True,
     )
     session.add(new_task)
     await session.flush()
@@ -1493,7 +1645,10 @@ async def task_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton("Дедлайн", callback_data=f"task:edit_field:deadline:{task_id}"),
                 InlineKeyboardButton("Исполнитель", callback_data=f"task:edit_field:assignee:{task_id}"),
             ],
-            [InlineKeyboardButton("« Назад", callback_data=f"task:back:{task_id}")]
+            [
+                InlineKeyboardButton("🗑 Удалить", callback_data=f"task:delete:{task_id}"),
+                InlineKeyboardButton("« Назад", callback_data=f"task:back:{task_id}"),
+            ]
         ])
         await query.edit_message_reply_markup(reply_markup=keyboard)
 
@@ -1519,6 +1674,286 @@ async def task_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         task_id = int(data[2])
         keyboard = _build_task_action_keyboard(task_id)
         await query.edit_message_reply_markup(reply_markup=keyboard)
+
+    elif action == "details":
+        task_id = int(data[2])
+        await _show_task_details(update, context, task_id)
+
+    elif action == "delete":
+        task_id = int(data[2])
+        await _handle_delete_task(update, context, task_id)
+
+    elif action == "delete_one":
+        task_id = int(data[2])
+        await _delete_single_task(update, context, task_id)
+
+    elif action == "delete_series":
+        task_id = int(data[2])
+        await _delete_task_series(update, context, task_id)
+
+
+async def tasks_filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle tasks filter callback."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split(":")
+    filter_type = data[2]
+
+    context.user_data["tasks_filter"] = filter_type
+
+    # Redirect to tasks_handler logic
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    async with get_session() as session:
+        query_obj = select(Task).where(
+            Task.chat_id == chat_id,
+            Task.status == TaskStatus.OPEN
+        )
+
+        if filter_type == "my":
+            query_obj = query_obj.where(Task.assignee_id == user_id)
+        elif filter_type == "overdue":
+            query_obj = query_obj.where(Task.deadline < datetime.utcnow())
+
+        result = await session.execute(query_obj)
+        tasks = list(result.scalars().all())
+
+        if not tasks:
+            if filter_type == "all":
+                text = MSG_NO_ACTIVE_TASKS
+            elif filter_type == "my":
+                text = MSG_NO_YOUR_TASKS_IN_CHAT
+            else:
+                text = "📋 Нет просроченных задач"
+            await query.edit_message_text(text)
+            return
+
+        tasks = _sort_tasks_by_urgency(tasks)
+        now = datetime.utcnow()
+        lines = ["📋 Активные задачи:\n"]
+
+        for i, task in enumerate(tasks[:10], 1):
+            if task.assignee_id:
+                result = await session.execute(
+                    select(User).where(User.id == task.assignee_id)
+                )
+                assignee = result.scalar_one_or_none()
+                assignee_name = assignee.display_name if assignee else "?"
+            else:
+                assignee_name = "—"
+
+            if task.deadline:
+                if task.deadline < now:
+                    deadline_str = "⚠️ просрочена"
+                elif task.deadline.date() == now.date():
+                    deadline_str = f"⏰ сегодня {task.deadline.strftime('%H:%M')}"
+                else:
+                    deadline_str = format_date(task.deadline)
+            else:
+                deadline_str = "без дедлайна"
+
+            recurrence_str = " 🔁" if task.recurrence != RecurrenceType.NONE else ""
+            lines.append(
+                f"{i}. {task.text}\n"
+                f"   👤 {assignee_name} | 📅 {deadline_str}{recurrence_str}\n"
+            )
+
+        if len(tasks) > 10:
+            lines.append(f"\n...и ещё {len(tasks) - 10} задач")
+
+        keyboard = _build_task_list_keyboard(tasks, current_filter=filter_type)
+        await query.edit_message_text("\n".join(lines), reply_markup=keyboard)
+
+
+async def _show_task_details(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    task_id: int
+) -> None:
+    """Show detailed task information."""
+    query = update.callback_query
+
+    async with get_session() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        task = result.scalar_one_or_none()
+
+        if not task:
+            await query.edit_message_text("Задача не найдена")
+            return
+
+        # Get assignee
+        assignee_name = "Не назначен"
+        if task.assignee_id:
+            result = await session.execute(
+                select(User).where(User.id == task.assignee_id)
+            )
+            assignee = result.scalar_one_or_none()
+            if assignee:
+                assignee_name = assignee.display_name
+
+        # Get author
+        result = await session.execute(
+            select(User).where(User.id == task.author_id)
+        )
+        author = result.scalar_one_or_none()
+        author_name = author.display_name if author else "?"
+
+        # Format message
+        lines = [f"📌 {task.text}", ""]
+
+        if task.deadline:
+            deadline_str = format_date(task.deadline, include_time=True)
+            if task.is_overdue:
+                lines.append(f"📅 Дедлайн: {deadline_str} ⚠️ просрочен")
+            else:
+                lines.append(f"📅 Дедлайн: {deadline_str}")
+        else:
+            lines.append("📅 Дедлайн: не установлен")
+
+        lines.append(f"👤 Исполнитель: {assignee_name}")
+        lines.append(f"✍️ Создал: {author_name}")
+
+        if task.recurrence != RecurrenceType.NONE:
+            lines.append(f"🔁 Повтор: {_get_recurrence_label(task.recurrence.value)}")
+
+        lines.append(f"\n📊 Статус: {'Открыта' if task.status == TaskStatus.OPEN else 'Закрыта'}")
+
+        keyboard = _build_task_action_keyboard(task_id)
+        await query.edit_message_text("\n".join(lines), reply_markup=keyboard)
+
+
+async def _handle_delete_task(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    task_id: int
+) -> None:
+    """Handle delete task request - show confirmation for recurring tasks."""
+    query = update.callback_query
+
+    async with get_session() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        task = result.scalar_one_or_none()
+
+        if not task:
+            await query.edit_message_text("Задача не найдена")
+            return
+
+        # Check if recurring
+        if task.recurrence != RecurrenceType.NONE or task.parent_task_id:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "🗑 Только эту",
+                    callback_data=f"task:delete_one:{task_id}"
+                )],
+                [InlineKeyboardButton(
+                    "🗑🗑 Всю серию",
+                    callback_data=f"task:delete_series:{task_id}"
+                )],
+                [InlineKeyboardButton(
+                    "« Отмена",
+                    callback_data=f"task:back:{task_id}"
+                )],
+            ])
+            await query.edit_message_text(
+                f"Удалить повторяющуюся задачу?\n\n📌 {task.text}",
+                reply_markup=keyboard
+            )
+        else:
+            # Non-recurring - confirm deletion
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "🗑 Удалить",
+                    callback_data=f"task:delete_one:{task_id}"
+                )],
+                [InlineKeyboardButton(
+                    "« Отмена",
+                    callback_data=f"task:back:{task_id}"
+                )],
+            ])
+            await query.edit_message_text(
+                f"Удалить задачу?\n\n📌 {task.text}",
+                reply_markup=keyboard
+            )
+
+
+async def _delete_single_task(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    task_id: int
+) -> None:
+    """Delete single task (not the series)."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+
+    async with get_session() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        task = result.scalar_one_or_none()
+
+        if not task:
+            await query.edit_message_text("Задача не найдена")
+            return
+
+        # Check permissions
+        if not await can_edit_task(session, user_id, task):
+            await query.answer(MSG_CANT_EDIT, show_alert=True)
+            return
+
+        # Close task (mark as deleted by deactivating recurrence)
+        task.status = TaskStatus.CLOSED
+        task.closed_at = datetime.utcnow()
+        task.closed_by = user_id
+        task.recurrence_active = False
+
+        await query.edit_message_text(f'🗑 Задача удалена: "{task.text}"')
+
+
+async def _delete_task_series(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    task_id: int
+) -> None:
+    """Delete entire task series (all recurring instances)."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+
+    async with get_session() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        task = result.scalar_one_or_none()
+
+        if not task:
+            await query.edit_message_text("Задача не найдена")
+            return
+
+        # Check permissions
+        if not await can_edit_task(session, user_id, task):
+            await query.answer(MSG_CANT_EDIT, show_alert=True)
+            return
+
+        # Find root task
+        root_id = task.parent_task_id or task.id
+
+        # Find all tasks in series
+        result = await session.execute(
+            select(Task).where(
+                ((Task.id == root_id) | (Task.parent_task_id == root_id)),
+                Task.status == TaskStatus.OPEN
+            )
+        )
+        series_tasks = result.scalars().all()
+
+        # Close all tasks in series
+        for t in series_tasks:
+            t.status = TaskStatus.CLOSED
+            t.closed_at = datetime.utcnow()
+            t.closed_by = user_id
+            t.recurrence_active = False
+
+        await query.edit_message_text(
+            f'🗑 Серия удалена: "{task.text}"\n'
+            f"Закрыто задач: {len(series_tasks)}"
+        )
 
 
 async def _close_task_callback(

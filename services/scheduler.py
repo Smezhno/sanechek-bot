@@ -95,12 +95,13 @@ async def check_task_deadlines_job(context) -> None:
     reminder_threshold = now + timedelta(hours=settings.task_reminder_hours_before)
 
     async with get_session() as session:
-        # Get tasks with deadline approaching
+        # Get tasks with deadline approaching (only tasks that have deadline)
         result = await session.execute(
             select(Task)
             .where(
                 Task.status == TaskStatus.OPEN,
                 Task.reminder_sent == False,
+                Task.deadline.isnot(None),
                 Task.deadline <= reminder_threshold,
                 Task.deadline > now  # Not yet overdue
             )
@@ -158,11 +159,12 @@ async def send_overdue_reminders_job(context) -> None:
     now = datetime.utcnow()
 
     async with get_session() as session:
-        # Get overdue tasks
+        # Get overdue tasks (only tasks that have deadline)
         result = await session.execute(
             select(Task)
             .where(
                 Task.status == TaskStatus.OPEN,
+                Task.deadline.isnot(None),
                 Task.deadline < now
             )
         )

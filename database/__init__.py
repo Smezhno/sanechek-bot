@@ -1,13 +1,13 @@
 """Database package."""
 from database.connection import get_session, init_db, engine
 from database.models import (
-    User, Chat, ChatMember, Task, Expense, 
-    Subscription, Reminder, Message, TaskStatus, ReminderStatus
+    User, Chat, ChatMember, Task, Expense,
+    Subscription, Reminder, Message, TaskStatus, ReminderStatus, RecurrenceType
 )
 
 __all__ = [
     "get_session", "init_db", "engine",
     "User", "Chat", "ChatMember", "Task", "Expense",
-    "Subscription", "Reminder", "Message", "TaskStatus", "ReminderStatus"
+    "Subscription", "Reminder", "Message", "TaskStatus", "ReminderStatus", "RecurrenceType"
 ]
 

@@ -40,12 +40,12 @@ def setup_handlers(app: Application) -> None:
         get_task_conversation_handler,
         get_edit_conversation_handler,
         tasks_handler, mytasks_handler, done_handler,
-        task_callback_handler
+        task_callback_handler, tasks_filter_callback
     )
     from handlers.expenses import get_cost_conversation_handler
     from handlers.reminders import (
         remind_handler, reminders_handler,
-        reminder_callback_handler
+        reminder_callback_handler, reminder_time_input_handler
     )
     from handlers.summary import (
         summary_handler, subscribe_handler,
@@ -57,6 +57,7 @@ def setup_handlers(app: Application) -> None:
     from handlers.ask import ask_handler, reply_to_bot_handler
     from handlers.sarcasm import sarcasm_handler
     from handlers.task_detector import analyze_for_tasks, suggest_task_callback, force_detect_handler, handle_task_details
+    from handlers.mention_handler import mention_handler, mention_callback_handler, mention_deadline_handler
     
     # Basic commands
     app.add_handler(CommandHandler("start", start_handler))
@@ -75,6 +76,13 @@ def setup_handlers(app: Application) -> None:
     
     # Expense commands are in conversation handler
     
+    # Smart @bot mentions for task creation (must be BEFORE remind_handler)
+    # Matches @bot <text> but NOT @bot ... напомни (reminders are separate)
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(rf"(?i)@{settings.bot_username}") & ~filters.Regex(r"(?i)напомни"),
+        mention_handler
+    ))
+
     # Reminder commands (matches @bot ... напомни with anything in between)
     app.add_handler(MessageHandler(
         filters.TEXT & filters.Regex(rf"(?i)@{settings.bot_username}.*напомни"),
@@ -102,6 +110,18 @@ def setup_handlers(app: Application) -> None:
         filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
         handle_task_details
     ), group=0)
+
+    # Handle deadline input for @bot mention tasks (group 0, same as task details)
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        mention_deadline_handler
+    ), group=0)
+
+    # Handle time input for reminders (group 0)
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        reminder_time_input_handler
+    ), group=0)
     
     # Reply to bot = ask question
     app.add_handler(MessageHandler(
@@ -111,9 +131,11 @@ def setup_handlers(app: Application) -> None:
     
     # Callback query handlers
     app.add_handler(CallbackQueryHandler(task_callback_handler, pattern=r"^task:"))
+    app.add_handler(CallbackQueryHandler(tasks_filter_callback, pattern=r"^tasks:filter:"))
     app.add_handler(CallbackQueryHandler(reminder_callback_handler, pattern=r"^reminder:"))
     app.add_handler(CallbackQueryHandler(subscribe_callback_handler, pattern=r"^subscribe:"))
     app.add_handler(CallbackQueryHandler(suggest_task_callback, pattern=r"^suggest_task:"))
+    app.add_handler(CallbackQueryHandler(mention_callback_handler, pattern=r"^mention:"))
     
     # Chat member updates
     app.add_handler(MessageHandler(

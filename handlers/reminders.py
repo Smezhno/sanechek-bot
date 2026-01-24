@@ -1,7 +1,8 @@
 """Reminder handlers."""
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import TypedDict, Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -15,18 +16,92 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# Constants
+PENDING_HASH_MODULO = 10000
+
 # Message constants
 MSG_REMIND_WHAT = "О чём напомнить?"
 MSG_REMIND_WHEN = (
     'Не понял, когда напомнить. Укажи время, например: '
     '"через 30 минут", "завтра в 15:00", "в пятницу"'
 )
+MSG_REMIND_WHEN_WITH_BUTTONS = "⏰ Когда напомнить?"
 MSG_NO_ACTIVE_REMINDERS = "🔔 Активных напоминаний нет"
 MSG_NO_REMINDERS_TO_CANCEL = "Нет напоминаний для отмены"
 MSG_REMINDER_NOT_FOUND = "Напоминание не найдено"
 MSG_REMINDER_NOT_ACTIVE = "Это напоминание уже не активно"
 MSG_CANCEL_NO_PERMISSION = "Отменить может только автор, получатель или админ"
 MSG_SELECT_TO_CANCEL = "Выбери напоминание для отмены:"
+MSG_PENDING_EXPIRED = "⏰ Предложение устарело. Создай напоминание заново."
+
+
+class PendingReminderData(TypedDict, total=False):
+    """Pending reminder data."""
+    text: str
+    recipient_id: int
+    author_id: int
+    chat_id: int
+
+
+def _compute_reminder_hash(text: str, chat_id: int) -> str:
+    """Compute hash for pending reminder."""
+    return str(abs(hash(f"{text}:{chat_id}")) % PENDING_HASH_MODULO)
+
+
+def _get_pending_reminder_key(reminder_hash: str) -> str:
+    """Get bot_data key for pending reminder."""
+    return f"pending_reminder_{reminder_hash}"
+
+
+def _store_pending_reminder(
+    context: ContextTypes.DEFAULT_TYPE,
+    reminder_hash: str,
+    data: PendingReminderData
+) -> None:
+    """Store pending reminder data."""
+    context.bot_data[_get_pending_reminder_key(reminder_hash)] = data
+
+
+def _get_pending_reminder(
+    context: ContextTypes.DEFAULT_TYPE,
+    reminder_hash: str
+) -> Optional[PendingReminderData]:
+    """Get pending reminder data."""
+    return context.bot_data.get(_get_pending_reminder_key(reminder_hash))
+
+
+def _delete_pending_reminder(
+    context: ContextTypes.DEFAULT_TYPE,
+    reminder_hash: str
+) -> None:
+    """Delete pending reminder data."""
+    context.bot_data.pop(_get_pending_reminder_key(reminder_hash), None)
+
+
+def _build_time_selection_keyboard(reminder_hash: str) -> InlineKeyboardMarkup:
+    """Build keyboard for time selection."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "⏰ Через час",
+                callback_data=f"reminder:time:1h:{reminder_hash}"
+            ),
+            InlineKeyboardButton(
+                "🌙 Вечером",
+                callback_data=f"reminder:time:evening:{reminder_hash}"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🌅 Завтра утром",
+                callback_data=f"reminder:time:tomorrow:{reminder_hash}"
+            ),
+            InlineKeyboardButton(
+                "⌨️ Ввести",
+                callback_data=f"reminder:time:manual:{reminder_hash}"
+            ),
+        ],
+    ])
 
 
 async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -117,7 +192,21 @@ async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 break
         
         if not time_text:
-            await message.reply_text(MSG_REMIND_WHEN)
+            # Store pending reminder and show time selection buttons
+            reminder_hash = _compute_reminder_hash(reminder_content, chat.id)
+            _store_pending_reminder(context, reminder_hash, {
+                "text": reminder_content,
+                "recipient_id": recipient_id,
+                "author_id": user.id,
+                "chat_id": chat.id,
+            })
+
+            keyboard = _build_time_selection_keyboard(reminder_hash)
+            await message.reply_text(
+                f'📝 "{reminder_content}"\n\n{MSG_REMIND_WHEN_WITH_BUTTONS}',
+                reply_markup=keyboard
+            )
+            context.user_data["reminder_waiting_time"] = reminder_hash
             return
         
         try:
@@ -272,16 +361,152 @@ async def reminder_callback_handler(update: Update, context: ContextTypes.DEFAUL
     """Handle reminder-related callback queries."""
     query = update.callback_query
     await query.answer()
-    
+
     data = query.data.split(":")
     action = data[1]
-    
+
     if action == "cancel_menu":
         await _show_cancel_menu(update, context)
-    
+
     elif action == "cancel":
         reminder_id = int(data[2])
         await _cancel_reminder(update, context, reminder_id)
+
+    elif action == "time":
+        time_option = data[2]
+        reminder_hash = data[3]
+        await _handle_time_selection(update, context, time_option, reminder_hash)
+
+
+async def _handle_time_selection(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    time_option: str,
+    reminder_hash: str
+) -> None:
+    """Handle time selection from buttons."""
+    query = update.callback_query
+    pending = _get_pending_reminder(context, reminder_hash)
+
+    if not pending:
+        await query.edit_message_text(MSG_PENDING_EXPIRED)
+        return
+
+    now = datetime.utcnow()
+
+    # Calculate remind_at based on option
+    if time_option == "1h":
+        remind_at = now + timedelta(hours=1)
+    elif time_option == "evening":
+        # Set to 19:00 today or tomorrow if already past
+        remind_at = now.replace(hour=19, minute=0, second=0, microsecond=0)
+        if remind_at <= now:
+            remind_at += timedelta(days=1)
+    elif time_option == "tomorrow":
+        # Set to 9:00 tomorrow
+        remind_at = (now + timedelta(days=1)).replace(
+            hour=9, minute=0, second=0, microsecond=0
+        )
+    elif time_option == "manual":
+        # Ask user to enter time manually
+        await query.edit_message_text(
+            f'📝 "{pending["text"]}"\n\n'
+            f"Введи время напоминания (например: через 2 часа, завтра в 15:00):"
+        )
+        context.user_data["reminder_waiting_time"] = reminder_hash
+        return
+    else:
+        await query.edit_message_text(MSG_PENDING_EXPIRED)
+        return
+
+    # Create reminder
+    async with get_session() as session:
+        reminder = Reminder(
+            chat_id=pending["chat_id"],
+            author_id=pending["author_id"],
+            recipient_id=pending["recipient_id"],
+            text=pending["text"],
+            remind_at=remind_at,
+        )
+        session.add(reminder)
+        await session.flush()
+
+        # Get recipient for display
+        if pending["recipient_id"] == pending["author_id"]:
+            recipient_text = ""
+        else:
+            result = await session.execute(
+                select(User).where(User.id == pending["recipient_id"])
+            )
+            recipient = result.scalar_one_or_none()
+            recipient_text = f" для {recipient.display_name}" if recipient else ""
+
+        time_str = format_date(remind_at, include_time=True)
+        await query.edit_message_text(
+            f'✅ Напомню{recipient_text} {time_str}:\n"{pending["text"]}"'
+        )
+
+    _delete_pending_reminder(context, reminder_hash)
+    context.user_data.pop("reminder_waiting_time", None)
+
+
+async def reminder_time_input_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle manual time input for reminders."""
+    if not update.message or not update.message.text:
+        return
+
+    reminder_hash = context.user_data.get("reminder_waiting_time")
+    if not reminder_hash:
+        return
+
+    pending = _get_pending_reminder(context, reminder_hash)
+    if not pending:
+        context.user_data.pop("reminder_waiting_time", None)
+        return
+
+    text = update.message.text.strip()
+
+    try:
+        remind_at = parse_reminder_time(text)
+    except DateParseError as e:
+        await update.message.reply_text(
+            f"❌ Не понял время: {e}\n\n"
+            "Попробуй ещё раз (например: через 2 часа, завтра в 15:00)"
+        )
+        return
+
+    # Create reminder
+    async with get_session() as session:
+        reminder = Reminder(
+            chat_id=pending["chat_id"],
+            author_id=pending["author_id"],
+            recipient_id=pending["recipient_id"],
+            text=pending["text"],
+            remind_at=remind_at,
+        )
+        session.add(reminder)
+        await session.flush()
+
+        # Get recipient for display
+        if pending["recipient_id"] == pending["author_id"]:
+            recipient_text = ""
+        else:
+            result = await session.execute(
+                select(User).where(User.id == pending["recipient_id"])
+            )
+            recipient = result.scalar_one_or_none()
+            recipient_text = f" для {recipient.display_name}" if recipient else ""
+
+        time_str = format_date(remind_at, include_time=True)
+        await update.message.reply_text(
+            f'✅ Напомню{recipient_text} {time_str}:\n"{pending["text"]}"'
+        )
+
+    _delete_pending_reminder(context, reminder_hash)
+    context.user_data.pop("reminder_waiting_time", None)
 
 
 async def _show_cancel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -369,49 +594,93 @@ async def send_reminder(
     context: ContextTypes.DEFAULT_TYPE,
     reminder: Reminder
 ) -> None:
-    """Send a reminder notification (called by scheduler)."""
+    """Send a reminder notification (called by scheduler).
+
+    Smart delivery: first try DM, then group chat if DM fails.
+    """
     async with get_session() as session:
         # Refresh reminder from DB
         result = await session.execute(
             select(Reminder).where(Reminder.id == reminder.id)
         )
         reminder = result.scalar_one_or_none()
-        
+
         if not reminder or reminder.status != ReminderStatus.PENDING:
             return
-        
+
         # Get recipient and author
         result = await session.execute(
             select(User).where(User.id == reminder.recipient_id)
         )
         recipient = result.scalar_one()
-        
+
         result = await session.execute(
             select(User).where(User.id == reminder.author_id)
         )
         author = result.scalar_one()
-        
-        # Format message
+
+        # Get chat for context
+        result = await session.execute(
+            select(Chat).where(Chat.id == reminder.chat_id)
+        )
+        chat = result.scalar_one_or_none()
+        chat_title = chat.title if chat else "чат"
+
+        # Format message for DM (includes chat context)
         if reminder.author_id != reminder.recipient_id:
-            text = (
+            dm_text = (
+                f"⏰ Напоминание из чата \"{chat_title}\":\n\n"
+                f"{reminder.text}\n\n"
+                f"(создал {author.display_name})"
+            )
+        else:
+            dm_text = (
+                f"⏰ Напоминание из чата \"{chat_title}\":\n\n"
+                f"{reminder.text}"
+            )
+
+        # Format message for group chat
+        if reminder.author_id != reminder.recipient_id:
+            group_text = (
                 f"⏰ {recipient.display_name}, напоминаю: {reminder.text}\n"
                 f"(создал {author.display_name})"
             )
         else:
-            text = f"⏰ {recipient.display_name}, напоминаю: {reminder.text}"
-        
+            group_text = f"⏰ {recipient.display_name}, напоминаю: {reminder.text}"
+
+        # Try DM first
+        dm_sent = False
         try:
             await context.bot.send_message(
-                chat_id=reminder.chat_id,
-                text=text
+                chat_id=recipient.id,
+                text=dm_text
+            )
+            dm_sent = True
+            logger.debug("Reminder %s sent to DM of user %s", reminder.id, recipient.id)
+        except Exception as e:
+            logger.debug(
+                "Failed to send reminder %s to DM of user %s: %s",
+                reminder.id, recipient.id, e
             )
 
-            reminder.status = ReminderStatus.SENT
-            reminder.sent_at = datetime.utcnow()
-        except Exception as e:
-            # Chat might be unavailable
-            logger.debug(
-                "Failed to send reminder %s to chat %s: %s",
-                reminder.id, reminder.chat_id, e
-            )
+        # If DM failed, send to group
+        if not dm_sent:
+            try:
+                await context.bot.send_message(
+                    chat_id=reminder.chat_id,
+                    text=group_text
+                )
+                logger.debug(
+                    "Reminder %s sent to group chat %s",
+                    reminder.id, reminder.chat_id
+                )
+            except Exception as e:
+                logger.debug(
+                    "Failed to send reminder %s to chat %s: %s",
+                    reminder.id, reminder.chat_id, e
+                )
+                return
+
+        reminder.status = ReminderStatus.SENT
+        reminder.sent_at = datetime.utcnow()
 

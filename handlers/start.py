@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from database import get_session, User, Chat, ChatMember, Message
 from utils.permissions import get_or_create_user
+from utils.cache import invalidate_cache
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -125,10 +126,13 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
     """Handle new chat members - track when bot or users join."""
     if not update.message or not update.message.new_chat_members:
         return
-    
+
     chat = update.effective_chat
     bot_id = context.bot.id
-    
+
+    # Invalidate members cache
+    invalidate_cache(chat.id)
+
     async with get_session() as session:
         # Check if bot was added
         for member in update.message.new_chat_members:
@@ -184,11 +188,14 @@ async def handle_left_chat_member(update: Update, context: ContextTypes.DEFAULT_
     """Handle when members leave chat."""
     if not update.message or not update.message.left_chat_member:
         return
-    
+
     chat = update.effective_chat
     left_member = update.message.left_chat_member
     bot_id = context.bot.id
-    
+
+    # Invalidate members cache
+    invalidate_cache(chat.id)
+
     async with get_session() as session:
         if left_member.id == bot_id:
             # Bot was removed

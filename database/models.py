@@ -20,10 +20,17 @@ class TaskStatus(str, Enum):
 class RecurrenceType(str, Enum):
     """Task recurrence type."""
     NONE = "none"
-    DAILY = "daily"           # Каждый день
-    WEEKDAYS = "weekdays"     # Пн-Пт
-    WEEKLY = "weekly"         # Каждую неделю (тот же день)
-    MONTHLY = "monthly"       # Каждый месяц (та же дата)
+    DAILY = "daily"                     # Каждый день
+    WEEKDAYS = "weekdays"               # Пн-Пт
+    WEEKLY = "weekly"                   # Каждую неделю (тот же день)
+    WEEKLY_MONDAY = "weekly_monday"     # Каждый понедельник
+    WEEKLY_TUESDAY = "weekly_tuesday"   # Каждый вторник
+    WEEKLY_WEDNESDAY = "weekly_wednesday"  # Каждую среду
+    WEEKLY_THURSDAY = "weekly_thursday"    # Каждый четверг
+    WEEKLY_FRIDAY = "weekly_friday"        # Каждую пятницу
+    WEEKLY_SATURDAY = "weekly_saturday"    # Каждую субботу
+    WEEKLY_SUNDAY = "weekly_sunday"        # Каждое воскресенье
+    MONTHLY = "monthly"                 # Каждый месяц (та же дата)
 
 
 class ReminderStatus(str, Enum):
@@ -113,9 +120,9 @@ class Task(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("chats.id"))
     author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
-    assignee_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    assignee_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
     text: Mapped[str] = mapped_column(Text)
-    deadline: Mapped[datetime] = mapped_column(DateTime)
+    deadline: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     status: Mapped[TaskStatus] = mapped_column(
         SQLEnum(TaskStatus), default=TaskStatus.OPEN
     )
@@ -134,19 +141,22 @@ class Task(Base):
         SQLEnum(RecurrenceType), default=RecurrenceType.NONE
     )
     parent_task_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("tasks.id"), nullable=True)
+    recurrence_active: Mapped[bool] = mapped_column(Boolean, default=True)
     
     # Relationships
     chat: Mapped["Chat"] = relationship("Chat", back_populates="tasks")
     author: Mapped["User"] = relationship(
         "User", back_populates="authored_tasks", foreign_keys=[author_id]
     )
-    assignee: Mapped["User"] = relationship(
+    assignee: Mapped[Optional["User"]] = relationship(
         "User", back_populates="assigned_tasks", foreign_keys=[assignee_id]
     )
     
     @property
     def is_overdue(self) -> bool:
         """Check if task is overdue."""
+        if self.deadline is None:
+            return False
         return self.status == TaskStatus.OPEN and datetime.utcnow() > self.deadline
 
 
