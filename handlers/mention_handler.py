@@ -53,6 +53,7 @@ class PendingTaskData(TypedDict, total=False):
     chat_id: int
     author_id: int
     is_dm: bool
+    command_message_id: Optional[int]
 
 
 # LLM Prompt for parsing mentions
@@ -375,6 +376,7 @@ def _recurrence_from_string(value: str) -> RecurrenceType:
 async def _create_task(
     session,
     data: PendingTaskData,
+    command_message_id: Optional[int] = None,
 ) -> Task:
     """Create task from pending data."""
     task = Task(
@@ -384,6 +386,7 @@ async def _create_task(
         text=data["text"],
         deadline=data.get("deadline"),
         recurrence=data.get("recurrence", RecurrenceType.NONE),
+        command_message_id=command_message_id,
         status=TaskStatus.OPEN
     )
     session.add(task)
@@ -531,6 +534,7 @@ async def mention_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "chat_id": chat.id,
                 "author_id": user.id,
                 "is_dm": is_dm,
+                "command_message_id": message.message_id,
             }
             _store_pending_data(context, task_hash, pending_data)
 
@@ -551,12 +555,21 @@ async def mention_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return
 
             # Create task immediately without asking for deadline
-            task = await _create_task(session, pending_data)
+            task = await _create_task(
+                session, 
+                pending_data, 
+                command_message_id=message.message_id
+            )
 
             confirmation = _format_task_confirmation(
                 task_text, assignee_name, deadline, recurrence
             )
-            await message.reply_text(confirmation)
+            reply_msg = await message.reply_text(confirmation)
+            
+            # Save confirmation message ID
+            task.confirmation_message_id = reply_msg.message_id
+            await session.commit()
+            
             _delete_pending_data(context, task_hash)
 
     except Exception as e:
@@ -596,7 +609,11 @@ async def mention_callback_handler(
                 pending["assignee_name"] = None
 
             # Create task immediately without asking for deadline
-            task = await _create_task(session, pending)
+            task = await _create_task(
+                session, 
+                pending,
+                command_message_id=pending.get("command_message_id")
+            )
 
             confirmation = _format_task_confirmation(
                 pending["text"],
@@ -604,7 +621,11 @@ async def mention_callback_handler(
                 pending.get("deadline"),
                 pending.get("recurrence", RecurrenceType.NONE)
             )
-            await query.edit_message_text(confirmation)
+            edited_msg = await query.edit_message_text(confirmation)
+            
+            # Save confirmation message ID
+            task.confirmation_message_id = edited_msg.message_id
+            await session.commit()
 
         _delete_pending_data(context, task_hash)
         return
@@ -615,7 +636,11 @@ async def mention_callback_handler(
 
         # Create task immediately without asking for deadline
         async with get_session() as session:
-            task = await _create_task(session, pending)
+            task = await _create_task(
+                session, 
+                pending,
+                command_message_id=pending.get("command_message_id")
+            )
 
             confirmation = _format_task_confirmation(
                 pending["text"],
@@ -623,7 +648,11 @@ async def mention_callback_handler(
                 pending.get("deadline"),
                 pending.get("recurrence", RecurrenceType.NONE)
             )
-            await query.edit_message_text(confirmation)
+            edited_msg = await query.edit_message_text(confirmation)
+            
+            # Save confirmation message ID
+            task.confirmation_message_id = edited_msg.message_id
+            await session.commit()
 
         _delete_pending_data(context, task_hash)
         return
