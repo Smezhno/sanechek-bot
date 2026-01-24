@@ -1503,16 +1503,22 @@ async def _process_inline_edit(
     task: Task,
     args: str
 ) -> int:
-    """Process inline edit command like '/edit дедлайн завтра'."""
+    """Process inline edit command with smart parsing."""
     args_lower = args.lower()
+    args_clean = args.strip().strip("-").strip()  # Remove leading/trailing dashes
     changes = []
 
-    # Check for deadline
-    if "дедлайн" in args_lower:
-        deadline_text = args_lower.split("дедлайн", 1)[1].strip()
-        for keyword in ["исполнитель", "текст"]:
-            if keyword in deadline_text:
-                deadline_text = deadline_text.split(keyword)[0].strip()
+    # Check for explicit keywords first
+    if "дедлайн" in args_lower or "срок" in args_lower:
+        # Extract deadline text after keyword
+        for keyword in ["дедлайн", "срок"]:
+            if keyword in args_lower:
+                deadline_text = args_lower.split(keyword, 1)[1].strip()
+                deadline_text = deadline_text.strip("-").strip()  # Remove dashes
+                for kw in ["исполнитель", "текст"]:
+                    if kw in deadline_text:
+                        deadline_text = deadline_text.split(kw)[0].strip()
+                break
 
         try:
             new_deadline = parse_deadline(deadline_text)
@@ -1522,9 +1528,9 @@ async def _process_inline_edit(
             await update.message.reply_text(f"Ошибка в дедлайне: {e}")
             return ConversationHandler.END
 
-    # Check for assignee
-    if "исполнитель" in args_lower:
+    elif "исполнитель" in args_lower:
         assignee_text = args_lower.split("исполнитель", 1)[1].strip()
+        assignee_text = assignee_text.strip("-").strip()
         username_match = re.search(r"@?(\w+)", assignee_text)
 
         if username_match:
@@ -1538,12 +1544,11 @@ async def _process_inline_edit(
                 await update.message.reply_text(MSG_USER_NOT_FOUND)
                 return ConversationHandler.END
 
-    # Check for text
-    if "текст" in args_lower:
+    elif "текст" in args_lower:
         text_idx = args.lower().find("текст")
         new_text = args[text_idx + 5:].strip()
 
-        for keyword in ["дедлайн", "исполнитель"]:
+        for keyword in ["дедлайн", "срок", "исполнитель"]:
             if keyword in new_text.lower():
                 new_text = new_text[:new_text.lower().find(keyword)].strip()
 
@@ -1551,18 +1556,67 @@ async def _process_inline_edit(
             task.text = new_text[:settings.max_task_length]
             changes.append(f'Новый текст: "{task.text}"')
 
+    # Smart parsing if no keywords found
+    if not changes:
+        # Try to parse as deadline first
+        try:
+            new_deadline = parse_deadline(args_clean)
+            task.deadline = new_deadline
+            changes.append(f"📅 Дедлайн: {format_date(new_deadline)}")
+        except DateParseError:
+            # Not a deadline, try to find assignee
+            # Check for @username
+            username_match = re.search(r"@(\w+)", args_clean)
+            if username_match:
+                username = username_match.group(1)
+                new_assignee = await _find_user_by_username(session, username)
+                if new_assignee:
+                    task.assignee_id = new_assignee.id
+                    changes.append(f"👤 Исполнитель: {new_assignee.display_name}")
+            else:
+                # Try to find by name
+                members = await _get_chat_members(session, task.chat_id)
+                matching = await _find_user_by_name_fuzzy(members, args_clean)
+                
+                if len(matching) == 1:
+                    task.assignee_id = matching[0].id
+                    changes.append(f"👤 Исполнитель: {matching[0].display_name}")
+                elif len(matching) > 1:
+                    # Multiple matches
+                    names = ", ".join([m.display_name for m in matching[:3]])
+                    await update.message.reply_text(
+                        f"Найдено несколько людей: {names}\n"
+                        f"Уточни: /edit исполнитель @username"
+                    )
+                    return ConversationHandler.END
+                else:
+                    # Not an assignee either, treat as new task text
+                    task.text = args_clean[:settings.max_task_length]
+                    changes.append(f'📝 Текст: "{task.text}"')
+
     if not changes:
         await update.message.reply_text(
-            "Неизвестное поле. Доступно: дедлайн, исполнитель, текст"
+            "❌ Не понял что изменить\n\n"
+            "Примеры:\n"
+            "• /edit завтра в 15:00\n"
+            "• /edit @username\n"
+            "• /edit новый текст задачи\n"
+            "• /edit дедлайн послезавтра\n"
+            "• /edit исполнитель Вася"
         )
         return ConversationHandler.END
 
-    result = await session.execute(select(User).where(User.id == task.assignee_id))
-    assignee = result.scalar_one()
+    # Get assignee for notification
+    if task.assignee_id:
+        result = await session.execute(select(User).where(User.id == task.assignee_id))
+        assignee = result.scalar_one_or_none()
+        assignee_mention = f"\n👀 {assignee.display_name}, обрати внимание" if assignee else ""
+    else:
+        assignee_mention = ""
 
     response = f'✏️ Задача изменена: "{task.text}"\n'
     response += "\n".join(changes)
-    response += f"\n{assignee.display_name}, обрати внимание"
+    response += assignee_mention
 
     await update.message.reply_text(response)
 
