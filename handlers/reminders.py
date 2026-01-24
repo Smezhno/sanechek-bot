@@ -30,14 +30,14 @@ PENDING_HASH_MODULO = 10000
 # Message constants
 MSG_REMIND_WHAT = "О чём напомнить?"
 MSG_REMIND_WHEN = (
-    'Не понял, когда напомнить. Укажи время, например: '
+    'Не понял время. Пиши так: '
     '"через 30 минут", "завтра в 15:00", "в пятницу"'
 )
-MSG_REMIND_WHEN_WITH_BUTTONS = "⏰ Когда напомнить?"
-MSG_NO_ACTIVE_REMINDERS = "🔔 Активных напоминаний нет"
-MSG_NO_REMINDERS_TO_CANCEL = "Нет напоминаний для отмены"
+MSG_REMIND_WHEN_WITH_BUTTONS = "⏰ Когда?"
+MSG_NO_ACTIVE_REMINDERS = "🔔 Напоминаний нет"
+MSG_NO_REMINDERS_TO_CANCEL = "Нечего отменять"
 MSG_REMINDER_NOT_FOUND = "Напоминание не найдено"
-MSG_REMINDER_NOT_ACTIVE = "Это напоминание уже не активно"
+MSG_REMINDER_NOT_ACTIVE = "Оно уже не активно"
 MSG_CANCEL_NO_PERMISSION = "Отменить может только автор, получатель или админ"
 MSG_SELECT_TO_CANCEL = "Выбери напоминание для отмены:"
 MSG_PENDING_EXPIRED = "⏰ Предложение устарело. Создай напоминание заново."
@@ -254,11 +254,11 @@ async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         time_str = format_date(remind_at, include_time=True)
         
         if recipient_id == user.id:
-            response = f'✅ Напомню в {time_str}: "{reminder_content}"'
+            response = f'✅ Ок, напомню в {time_str}: "{reminder_content}"'
         else:
             result = await session.execute(select(User).where(User.id == recipient_id))
             recipient = result.scalar_one()
-            response = f'✅ Напомню {recipient.display_name} {time_str}: "{reminder_content}"'
+            response = f'✅ Ок, {recipient.display_name} напомню {time_str}: "{reminder_content}"'
         
         reply = await message.reply_text(response)
         # Save confirmation message ID for editing/cancellation
@@ -453,7 +453,7 @@ async def _handle_time_selection(
 
         time_str = format_date(remind_at, include_time=True)
         await query.edit_message_text(
-            f'✅ Напомню{recipient_text} {time_str}:\n"{pending["text"]}"'
+            f'✅ Ок, напомню{recipient_text} {time_str}:\n"{pending["text"]}"'
         )
 
     _delete_pending_reminder(context, reminder_hash)
@@ -512,7 +512,7 @@ async def reminder_time_input_handler(
 
         time_str = format_date(remind_at, include_time=True)
         await update.message.reply_text(
-            f'✅ Напомню{recipient_text} {time_str}:\n"{pending["text"]}"'
+            f'✅ Ок, напомню{recipient_text} {time_str}:\n"{pending["text"]}"'
         )
 
     _delete_pending_reminder(context, reminder_hash)

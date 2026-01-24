@@ -26,12 +26,12 @@ PENDING_HASH_MODULO = 10000
 BUTTON_TEXT_MAX = 25
 
 # Message constants
-MSG_TASK_CREATED = "✅ Задача создана!"
-MSG_TASK_NO_TEXT = "Не понял, какую задачу создать. Напиши текст после упоминания."
-MSG_EXPIRED = "⏰ Предложение устарело"
-MSG_USER_NOT_FOUND = "Не нашёл пользователя {name} в этом чате"
-MSG_MULTIPLE_MATCHES = "Найдено несколько совпадений. Выбери исполнителя:"
-MSG_NO_API_KEY = "❌ LLM не настроен. Используй /task для создания задачи."
+MSG_TASK_CREATED = "✅ Готово, задача создана."
+MSG_TASK_NO_TEXT = "А что делать-то надо? Напиши текст задачи."
+MSG_EXPIRED = "⏰ Всё, предложение устарело"
+MSG_USER_NOT_FOUND = "Не нашёл {name} в чате. Ошибся?"
+MSG_MULTIPLE_MATCHES = "Нашёл несколько человек. Кого надо?"
+MSG_NO_API_KEY = "❌ LLM не настроен. Используй /task."
 
 
 class ParsedMention(TypedDict, total=False):
@@ -618,7 +618,7 @@ async def mention_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     except Exception as e:
         logger.exception(f"Error in mention_handler: {e}")
-        await message.reply_text("❌ Произошла ошибка при создании задачи. Попробуйте ещё раз.")
+        await message.reply_text("❌ Чёт облажался. Попробуй ещё раз.")
 
 
 async def mention_callback_handler(

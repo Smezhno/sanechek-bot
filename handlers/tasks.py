@@ -1057,9 +1057,9 @@ async def _create_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             recurrence_display = f"\n🔄 Повтор: {_get_recurrence_label(recurrence.value)}"
 
         confirmation = (
-            f'✅ Задача создана: "{text}"\n'
-            f"Исполнитель: {assignee.display_name}\n"
-            f"Дедлайн: {deadline_str}"
+            f'✅ Готово: "{text}"\n'
+            f"Кто делает: {assignee.display_name}\n"
+            f"Срок: {deadline_str}"
             f"{recurrence_display}"
         )
 
@@ -1679,8 +1679,8 @@ async def _process_reminder_edit(
         
         reminder.remind_at = new_time
         
-        response = f'✏️ Напоминание изменено:\n"{reminder.text}"\n'
-        response += f"🕐 Новое время: {format_date(new_time, include_time=True)}"
+        response = f'✏️ Поменял:\n"{reminder.text}"\n'
+        response += f"🕐 Время: {format_date(new_time, include_time=True)}"
         
         await update.message.reply_text(response)
         
@@ -2119,7 +2119,7 @@ async def _close_task_callback(
         result = await session.execute(select(User).where(User.id == user_id))
         closer = result.scalar_one()
 
-        msg = f'✅ Задача закрыта: "{task.text}"\nЗакрыл: {closer.display_name}'
+        msg = f'✅ Готово: "{task.text}"\nСделал: {closer.display_name}'
         if next_task:
             msg += f"\n🔄 Следующая: {format_date(next_task.deadline)}"
 

@@ -48,8 +48,8 @@ async def _process_question(
         
         if usage and usage.count >= DAILY_LIMIT:
             await update.message.reply_text(
-                f"🚫 Лимит исчерпан! Ты уже задал {DAILY_LIMIT} вопроса сегодня.\n"
-                "Приходи завтра 😉"
+                f"Бро, всё, лимит на сегодня кончился. {DAILY_LIMIT} вопросов уже задал.\n"
+                "Завтра приходи, разберём."
             )
             return
         
@@ -77,7 +77,7 @@ async def _process_question(
         response = await ask_llm(question)
         
         # Add remaining counter
-        footer = f"\n\n_Осталось вопросов сегодня: {remaining}_"
+        footer = f"\n\n_Осталось на сегодня: {remaining}_"
         
         await update.message.reply_text(
             response + footer,
@@ -85,7 +85,7 @@ async def _process_question(
         )
     except Exception as e:
         await update.message.reply_text(
-            "😔 Не удалось получить ответ. Попробуй позже."
+            "Чёт не получилось ответить. Попробуй позже, бро."
         )
 
 
@@ -95,9 +95,9 @@ async def ask_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     if not question:
         await update.message.reply_text(
-            "Задай вопрос после команды:\n"
+            "Вопрос-то где? Пиши так:\n"
             "`/ask Как приготовить борщ?`\n\n"
-            "Или ответь на любое моё сообщение с вопросом 🙂",
+            "Или реплайни на любое моё сообщение — отвечу.",
             parse_mode="Markdown"
         )
         return

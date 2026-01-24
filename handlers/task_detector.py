@@ -29,11 +29,11 @@ MESSAGE_TRUNCATE_LENGTH = 150
 BUTTON_TEXT_MAX_LENGTH = 25
 
 # Messages
-MSG_EXPIRED = "⏰ Предложение устарело"
-MSG_DISMISSED = "👍 Окей, не буду"
-MSG_NO_TASKS = "✅ Задач не обнаружено"
-MSG_NO_API_KEY = "❌ API ключ не настроен"
-MSG_TASK_CREATED = "✅ Задача создана!"
+MSG_EXPIRED = "⏰ Всё, предложение устарело"
+MSG_DISMISSED = "👍 Ок, не буду"
+MSG_NO_TASKS = "✅ Задач нет"
+MSG_NO_API_KEY = "❌ API не настроен"
+MSG_TASK_CREATED = "✅ Готово, создал!"
 
 
 class SuggestedTaskData(TypedDict, total=False):
