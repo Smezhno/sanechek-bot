@@ -1445,7 +1445,7 @@ async def _create_next_recurring_task(session, task: Task) -> Optional[Task]:
 # --- Edit Handlers ---
 
 async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /edit command - edit a task (reply to task message)."""
+    """Handle /edit command - edit a task or reminder (reply to message)."""
     if update.effective_chat.type == "private":
         await update.message.reply_text(MSG_DM_EDIT_HINT)
         return ConversationHandler.END
@@ -1460,6 +1460,7 @@ async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     args = " ".join(context.args) if context.args else ""
 
     async with get_session() as session:
+        # Try to find task first
         result = await session.execute(
             select(Task).where(
                 and_(
@@ -1471,28 +1472,61 @@ async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         task = result.scalar_one_or_none()
 
-        if not task:
-            await update.message.reply_text(MSG_NOT_A_TASK)
+        if task:
+            # Found task - edit it
+            if not await can_edit_task(session, user_id, task):
+                await update.message.reply_text(MSG_CANT_EDIT)
+                return ConversationHandler.END
+
+            context.user_data["edit_task_id"] = task.id
+
+            if args:
+                return await _process_inline_edit(update, context, session, task, args)
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Текст", callback_data=f"task:edit_field:text:{task.id}"),
+                    InlineKeyboardButton("Дедлайн", callback_data=f"task:edit_field:deadline:{task.id}"),
+                    InlineKeyboardButton("Исполнитель", callback_data=f"task:edit_field:assignee:{task.id}"),
+                ]
+            ])
+
+            await update.message.reply_text("Что изменить?", reply_markup=keyboard)
             return ConversationHandler.END
 
-        if not await can_edit_task(session, user_id, task):
-            await update.message.reply_text(MSG_CANT_EDIT)
+        # Not a task, try to find reminder
+        from database import Reminder, ReminderStatus
+        result = await session.execute(
+            select(Reminder).where(
+                and_(
+                    Reminder.chat_id == chat_id,
+                    (Reminder.command_message_id == reply_to.message_id) |
+                    (Reminder.confirmation_message_id == reply_to.message_id),
+                    Reminder.status == ReminderStatus.PENDING
+                )
+            )
+        )
+        reminder = result.scalar_one_or_none()
+
+        if reminder:
+            # Found reminder - edit it
+            from utils.permissions import can_cancel_reminder
+            if not await can_cancel_reminder(session, user_id, reminder):
+                await update.message.reply_text("Редактировать напоминание может только автор или получатель")
+                return ConversationHandler.END
+
+            if args:
+                return await _process_reminder_edit(update, context, session, reminder, args)
+
+            await update.message.reply_text(
+                "❌ Не понял что изменить\n\n"
+                "Используй: /edit новое время\n"
+                "Например: /edit через полчаса"
+            )
             return ConversationHandler.END
 
-        context.user_data["edit_task_id"] = task.id
-
-        if args:
-            return await _process_inline_edit(update, context, session, task, args)
-
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Текст", callback_data=f"task:edit_field:text:{task.id}"),
-                InlineKeyboardButton("Дедлайн", callback_data=f"task:edit_field:deadline:{task.id}"),
-                InlineKeyboardButton("Исполнитель", callback_data=f"task:edit_field:assignee:{task.id}"),
-            ]
-        ])
-
-        await update.message.reply_text("Что изменить?", reply_markup=keyboard)
+        # Neither task nor reminder found
+        await update.message.reply_text("Это не задача и не напоминание. Ответь на сообщение с задачей или напоминанием")
         return ConversationHandler.END
 
 
@@ -1622,6 +1656,41 @@ async def _process_inline_edit(
 
     context.user_data.clear()
     return ConversationHandler.END
+
+
+async def _process_reminder_edit(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    session,
+    reminder,
+    args: str
+) -> int:
+    """Process reminder time edit."""
+    args_clean = args.strip().strip("-").strip()
+    
+    # Try to parse as new time
+    try:
+        new_time = parse_deadline(args_clean)
+        reminder.remind_at = new_time
+        
+        response = f'✏️ Напоминание изменено:\n"{reminder.text}"\n'
+        response += f"🕐 Новое время: {format_date(new_time, include_time=True)}"
+        
+        await update.message.reply_text(response)
+        
+        context.user_data.clear()
+        return ConversationHandler.END
+        
+    except DateParseError as e:
+        await update.message.reply_text(
+            f"❌ Не понял время: {e}\n\n"
+            "Примеры:\n"
+            "• /edit через полчаса\n"
+            "• /edit завтра в 15:00\n"
+            "• /edit послезавтра\n"
+            "• /edit в пятницу"
+        )
+        return ConversationHandler.END
 
 
 async def receive_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

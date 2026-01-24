@@ -210,7 +210,8 @@ class Reminder(Base):
     cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     cancelled_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     
-    # Message ID for cancellation
+    # Message IDs for editing/cancellation
+    command_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     confirmation_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     
     # Relationships

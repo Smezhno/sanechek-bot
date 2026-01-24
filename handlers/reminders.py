@@ -237,6 +237,7 @@ async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             recipient_id=recipient_id,
             text=reminder_content,
             remind_at=remind_at,
+            command_message_id=message.message_id,  # Save command message ID
         )
         session.add(reminder)
         await session.flush()
@@ -252,6 +253,7 @@ async def remind_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             response = f'✅ Напомню {recipient.display_name} {time_str}: "{reminder_content}"'
         
         reply = await message.reply_text(response)
+        # Save confirmation message ID for editing/cancellation
         reminder.confirmation_message_id = reply.message_id
 
 
