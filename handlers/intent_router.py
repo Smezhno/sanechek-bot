@@ -277,6 +277,10 @@ async def intent_router_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if message.from_user and message.from_user.is_bot:
         return
     
+    # Skip replies (handled by reply_to_bot_handler)
+    if message.reply_to_message:
+        return
+    
     # Skip @bot mentions (handled separately)
     if f"@{settings.bot_username}" in text.lower():
         return

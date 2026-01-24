@@ -139,10 +139,6 @@ async def reply_to_bot_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if text.startswith("/"):
         return
 
-    # Skip very short messages (likely just reactions)
-    if len(text) < 5:
-        return
-
     # Use reply analyzer to determine intent
     from handlers.reply_analyzer import analyze_reply, get_reply_context
     from utils.intent_helpers import IntentType
