@@ -200,6 +200,14 @@ def _parse_date_expression(text: str) -> Optional[datetime]:
     default_hour = 0 if hour is None else hour
     default_minute = 1 if minute is None else minute
     
+    # If only time specified (no date keywords), use today if not passed, else tomorrow
+    if hour is not None and not remaining.strip():
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            # Time has passed today, use tomorrow
+            target = target + timedelta(days=1)
+        return target
+    
     # "сегодня"
     if "сегодня" in remaining:
         return now.replace(hour=hour or 12, minute=minute or 0, second=0, microsecond=0)
