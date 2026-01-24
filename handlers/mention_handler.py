@@ -138,6 +138,43 @@ def _has_api_key() -> bool:
     return bool(settings.openai_api_key or settings.yandex_gpt_api_key)
 
 
+def _is_question_or_greeting(text: str) -> bool:
+    """
+    Check if text is a question or greeting rather than a task.
+    Returns True if this should be handled as a question/chat, not a task.
+    """
+    text_lower = text.lower().strip()
+    
+    # Questions - starts with question words or ends with ?
+    question_patterns = [
+        r'^\s*(как|что|почему|зачем|где|когда|кто|какой|какая|какие|чей)\b',
+        r'\?$',  # Ends with question mark
+    ]
+    
+    for pattern in question_patterns:
+        if re.search(pattern, text_lower):
+            return True
+    
+    # Greetings and casual phrases
+    greetings = [
+        r'\b(привет|здравствуй|здорово|хай|hey|hi)\b',
+        r'\b(как дела|как сам|как ты|как поживаешь)\b',
+        r'\b(что нового|че как|ну как)\b',
+        r'^(хэй|йоу|эй)\b',
+    ]
+    
+    for pattern in greetings:
+        if re.search(pattern, text_lower):
+            return True
+    
+    # Very short messages (likely not tasks)
+    if len(text.split()) <= 3 and not any(word in text_lower for word in ['надо', 'нужно', 'сделать', 'напомни']):
+        # Short phrase without task keywords - probably a question
+        return True
+    
+    return False
+
+
 def _extract_mention_text(text: str) -> str:
     """Extract text after @bot mention, excluding the mention itself."""
     pattern = rf"@{settings.bot_username}\s*"
