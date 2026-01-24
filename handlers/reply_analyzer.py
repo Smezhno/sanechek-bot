@@ -114,6 +114,7 @@ async def _classify_reply_intent_with_llm(
         intent_map = {
             "EDIT_TASK": IntentType.EDIT_TASK,
             "EDIT_REMINDER": IntentType.EDIT_REMINDER,
+            "CLOSE_TASK": IntentType.CLOSE_TASK,
             "CONTINUE_DIALOG": IntentType.QUESTION,
             "NONE": IntentType.NONE
         }

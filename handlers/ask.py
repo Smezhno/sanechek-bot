@@ -152,13 +152,16 @@ async def reply_to_bot_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         # Analyze intent
         intent_result = await analyze_reply(update, context)
         
-        # If clear edit intent, handle it
-        if intent_result and intent_result.intent_type in [IntentType.EDIT_TASK, IntentType.EDIT_REMINDER]:
+        # If clear edit or close intent, handle it
+        if intent_result and intent_result.intent_type in [IntentType.EDIT_TASK, IntentType.EDIT_REMINDER, IntentType.CLOSE_TASK]:
             if intent_result.intent_type == IntentType.EDIT_TASK:
                 await _handle_task_edit_from_reply(update, context, reply_context, intent_result)
                 return
             elif intent_result.intent_type == IntentType.EDIT_REMINDER:
                 await _handle_reminder_edit_from_reply(update, context, reply_context, intent_result)
+                return
+            elif intent_result.intent_type == IntentType.CLOSE_TASK:
+                await _handle_task_close_from_reply(update, context, reply_context, intent_result)
                 return
     
     # For all other cases (questions, dialog continuation, etc.) - answer as question
@@ -208,4 +211,52 @@ async def _handle_reminder_edit_from_reply(
     # Call existing edit handler
     async with get_session() as session:
         await _process_reminder_edit(update, context, session, reminder, args)
+
+
+async def _handle_task_close_from_reply(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    reply_context: dict,
+    intent_result
+) -> None:
+    """Handle task closing from a reply."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from database.models import User
+    from sqlalchemy import select
+    
+    task = reply_context.get("task")
+    if not task:
+        await update.message.reply_text("❌ Задача не найдена")
+        return
+    
+    user_id = update.effective_user.id
+    
+    # Check permissions - only author or assignee can close
+    if user_id not in [task.author_id, task.assignee_id]:
+        async with get_session() as session:
+            result = await session.execute(select(User).where(User.id == task.author_id))
+            author = result.scalar_one_or_none()
+            result = await session.execute(select(User).where(User.id == task.assignee_id))
+            assignee = result.scalar_one_or_none()
+            
+            author_name = author.display_name if author else "автор"
+            assignee_name = assignee.display_name if assignee else "исполнитель"
+            
+            await update.message.reply_text(
+                f"❌ Закрыть задачу может только {author_name} или {assignee_name}"
+            )
+            return
+    
+    # Show confirmation button
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Да, закрыть", callback_data=f"task:close_confirm:{task.id}"),
+            InlineKeyboardButton("❌ Нет", callback_data="task:close_cancel")
+        ]
+    ])
+    
+    await update.message.reply_text(
+        f'Закрыть задачу "{task.text}"?',
+        reply_markup=keyboard
+    )
 

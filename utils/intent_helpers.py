@@ -11,6 +11,7 @@ class IntentType(Enum):
     EXPENSE = "expense"
     EDIT_TASK = "edit_task"
     EDIT_REMINDER = "edit_reminder"
+    CLOSE_TASK = "close_task"
     NONE = "none"
 
 

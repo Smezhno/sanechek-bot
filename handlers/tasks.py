@@ -755,6 +755,11 @@ async def _route_parsed_task(
 async def receive_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive task text from user."""
     text = update.message.text.strip()
+    
+    # Allow any command to exit conversation
+    if text.startswith("/"):
+        context.user_data.clear()
+        return ConversationHandler.END
 
     if not text:
         await update.message.reply_text("Текст задачи не может быть пустым. Попробуй ещё раз:")
@@ -781,6 +786,12 @@ async def receive_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def receive_task_assignee(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive task assignee from user."""
     text = update.message.text.strip()
+    
+    # Allow any command to exit conversation
+    if text.startswith("/"):
+        context.user_data.clear()
+        return ConversationHandler.END
+    
     chat_id = context.user_data["task_chat_id"]
     user_id = update.effective_user.id
 
@@ -946,6 +957,11 @@ async def task_assignee_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def receive_task_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive task deadline from user."""
     text = update.message.text.strip().lower()
+    
+    # Allow any command to exit conversation
+    if text.startswith("/"):
+        context.user_data.clear()
+        return ConversationHandler.END
 
     # Check for recurrence patterns first
     detected_recurrence = _detect_recurrence(text)
@@ -1240,11 +1256,12 @@ async def tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /mytasks command - list user's tasks."""
-    user_id = update.effective_user.id
-    chat_type = update.effective_chat.type
-    chat_id = update.effective_chat.id if chat_type != "private" else None
+    try:
+        user_id = update.effective_user.id
+        chat_type = update.effective_chat.type
+        chat_id = update.effective_chat.id if chat_type != "private" else None
 
-    async with get_session() as session:
+        async with get_session() as session:
         if chat_id:
             # In group - show tasks in this chat only
             result = await session.execute(
@@ -1330,6 +1347,9 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "Это все твои активные задачи.",
                 reply_markup=keyboard
             )
+    except Exception as e:
+        logger.exception(f"Error in mytasks_handler: {e}")
+        await update.message.reply_text("❌ Чёт не вышло показать задачи. Попробуй позже.")
 
 
 # --- Task Actions ---
@@ -1653,7 +1673,11 @@ async def _process_inline_edit(
     response += "\n".join(changes)
     response += assignee_mention
 
-    await update.message.reply_text(response)
+    reply = await update.message.reply_text(response)
+    
+    # Save new confirmation_message_id so /done works on this message
+    task.confirmation_message_id = reply.message_id
+    await session.commit()
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1682,7 +1706,11 @@ async def _process_reminder_edit(
         response = f'✏️ Поменял:\n"{reminder.text}"\n'
         response += f"🕐 Время: {format_date(new_time, include_time=True)}"
         
-        await update.message.reply_text(response)
+        reply = await update.message.reply_text(response)
+        
+        # Save new confirmation_message_id so commands work on this message
+        reminder.confirmation_message_id = reply.message_id
+        await session.commit()
         
         context.user_data.clear()
         return ConversationHandler.END
@@ -1765,6 +1793,14 @@ async def task_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if action == "close":
         task_id = int(data[2])
         await _close_task_callback(update, context, task_id)
+    
+    elif action == "close_confirm":
+        task_id = int(data[2])
+        await _close_task_callback(update, context, task_id)
+        await query.message.delete()
+    
+    elif action == "close_cancel":
+        await query.edit_message_text("Ок, не закрываю.")
 
     elif action == "edit":
         task_id = int(data[2])

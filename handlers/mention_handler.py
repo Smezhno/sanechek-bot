@@ -469,6 +469,49 @@ def _format_task_confirmation(
     return "\n".join(lines)
 
 
+# ========== Context Gathering ==========
+
+async def _get_user_message_context(
+    chat_id: int,
+    user_id: int,
+    current_message_id: int,
+    limit: int = 5
+) -> str:
+    """
+    Get last N messages from user in this chat for context.
+    
+    Returns formatted context string with recent messages.
+    """
+    from database.models import Message
+    
+    async with get_session() as session:
+        # Get last N messages from this user in this chat (before current message)
+        result = await session.execute(
+            select(Message)
+            .where(
+                Message.chat_id == chat_id,
+                Message.user_id == user_id,
+                Message.message_id < current_message_id
+            )
+            .order_by(Message.timestamp.desc())
+            .limit(limit)
+        )
+        messages = result.scalars().all()
+    
+    if not messages:
+        return ""
+    
+    # Format context (reverse to show chronologically)
+    context_lines = ["Контекст последних сообщений пользователя:"]
+    for msg in reversed(messages):
+        # Truncate long messages
+        text = msg.text[:200] if msg.text and len(msg.text) > 200 else msg.text
+        if text:
+            context_lines.append(f"- {text}")
+    
+    return "\n".join(context_lines)
+
+
 # ========== Main Handlers ==========
 
 async def mention_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -492,9 +535,23 @@ async def mention_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         # Check if this is a question/greeting instead of a task
         if _is_question_or_greeting(mention_text):
-            # Redirect to ask handler
+            # Gather context from recent messages
+            message_context = await _get_user_message_context(
+                chat.id,
+                user.id,
+                message.message_id,
+                limit=5
+            )
+            
+            # Build question with context
+            if message_context:
+                full_question = f"{message_context}\n\nТекущий вопрос: {mention_text}"
+            else:
+                full_question = mention_text
+            
+            # Redirect to ask handler with context
             from handlers.ask import _process_question
-            await _process_question(update, context, mention_text)
+            await _process_question(update, context, full_question)
             return
 
         is_dm = chat.type == "private"

@@ -112,14 +112,9 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle /cancel command - cancel current conversation."""
-    # Check if we're in a conversation
-    if context.user_data.get("in_conversation"):
-        context.user_data.clear()
-        await update.message.reply_text(MSG_CANCELLED)
-        return ConversationHandler.END
-    else:
-        await update.message.reply_text(MSG_NOTHING_TO_CANCEL)
-        return ConversationHandler.END
+    context.user_data.clear()
+    await update.message.reply_text("Ок, отменил.")
+    return ConversationHandler.END
 
 
 async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
