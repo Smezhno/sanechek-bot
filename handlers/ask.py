@@ -13,7 +13,7 @@ from llm.client import ask_llm
 
 
 # Daily limit per user
-DAILY_LIMIT = 2
+DAILY_LIMIT = 10
 
 
 class AskUsage(Base):
