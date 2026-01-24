@@ -453,6 +453,13 @@ async def mention_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await message.reply_text(MSG_TASK_NO_TEXT)
             return
 
+        # Check if this is a question/greeting instead of a task
+        if _is_question_or_greeting(mention_text):
+            # Redirect to ask handler
+            from handlers.ask import _process_question
+            await _process_question(update, context, mention_text)
+            return
+
         is_dm = chat.type == "private"
 
         async with get_session() as session:
