@@ -125,17 +125,17 @@ def setup_handlers(app: Application) -> None:
         handle_task_details
     ), group=0)
 
+    # Reply to bot = ask question (group -2, runs early to catch all bot replies)
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.REPLY & ~filters.COMMAND,
+        reply_to_bot_handler
+    ), group=-2)
+    
     # Handle time input for reminders (group 0)
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         reminder_time_input_handler
     ), group=0)
-    
-    # Reply to bot = ask question
-    app.add_handler(MessageHandler(
-        filters.TEXT & filters.REPLY & ~filters.COMMAND,
-        reply_to_bot_handler
-    ))
     
     # Callback query handlers
     app.add_handler(CallbackQueryHandler(task_callback_handler, pattern=r"^task:"))
