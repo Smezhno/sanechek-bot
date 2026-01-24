@@ -139,39 +139,31 @@ async def reply_to_bot_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if text.startswith("/"):
         return
 
-    # Use reply analyzer to determine intent
-    from handlers.reply_analyzer import analyze_reply, get_reply_context
+    # Get context to understand what user is replying to
+    from handlers.reply_analyzer import get_reply_context
     from utils.intent_helpers import IntentType
     
-    # Get full context
     reply_context = await get_reply_context(update, context)
-    if not reply_context:
-        return
     
-    # Analyze intent
-    intent_result = await analyze_reply(update, context)
+    # If replying to a task or reminder, use smart intent analysis
+    if reply_context and reply_context.get("message_type") in ["task", "reminder"]:
+        from handlers.reply_analyzer import analyze_reply
+        
+        # Analyze intent
+        intent_result = await analyze_reply(update, context)
+        
+        # If clear edit intent, handle it
+        if intent_result and intent_result.intent_type in [IntentType.EDIT_TASK, IntentType.EDIT_REMINDER]:
+            if intent_result.intent_type == IntentType.EDIT_TASK:
+                await _handle_task_edit_from_reply(update, context, reply_context, intent_result)
+                return
+            elif intent_result.intent_type == IntentType.EDIT_REMINDER:
+                await _handle_reminder_edit_from_reply(update, context, reply_context, intent_result)
+                return
     
-    # If no clear intent or low confidence, default to question
-    if not intent_result or intent_result.confidence < 0.65:
-        await _process_question(update, context, text)
-        return
+    # For all other cases (questions, dialog continuation, etc.) - answer as question
+    await _process_question(update, context, text)
     
-    # Route based on intent type
-    if intent_result.intent_type == IntentType.EDIT_TASK:
-        await _handle_task_edit_from_reply(update, context, reply_context, intent_result)
-    
-    elif intent_result.intent_type == IntentType.EDIT_REMINDER:
-        await _handle_reminder_edit_from_reply(update, context, reply_context, intent_result)
-    
-    elif intent_result.intent_type == IntentType.QUESTION:
-        # Continue dialog
-        question = intent_result.question if intent_result.question else text
-        await _process_question(update, context, question)
-    
-    else:
-        # NONE intent - ignore or treat as question if text is long enough
-        if len(text) >= 10:
-            await _process_question(update, context, text)
 
 
 async def _handle_task_edit_from_reply(
