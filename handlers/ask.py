@@ -106,12 +106,20 @@ async def ask_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def reply_to_bot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle replies to bot messages - treat as questions."""
+    """
+    Handle replies to bot messages with smart intent detection.
+    Routes to appropriate handler based on context:
+    - Task editing if replying to task
+    - Reminder editing if replying to reminder
+    - Question answering for everything else
+    """
     if not update.message or not update.message.text:
         return
 
     # Skip if waiting for task details
-    if context.user_data.get("waiting_assignee_for") or context.user_data.get("waiting_deadline_for"):
+    if context.user_data.get("waiting_assignee_for") or \
+       context.user_data.get("waiting_deadline_for") or \
+       context.user_data.get("reminder_waiting_time"):
         return
 
     # Check if this is a reply to bot's message
@@ -126,13 +134,6 @@ async def reply_to_bot_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if reply_to.from_user.id != context.bot.id:
         return
 
-    # Skip if bot was asking for time/reminder details
-    reply_to_text = reply_to.text.lower() if reply_to.text else ""
-    if any(phrase in reply_to_text for phrase in [
-        "когда напомнить", "укажи время", "дата уже прошла", "укажи дату"
-    ]):
-        return
-
     # Skip commands
     text = update.message.text
     if text.startswith("/"):
@@ -142,6 +143,81 @@ async def reply_to_bot_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if len(text) < 5:
         return
 
-    # Process as question
-    await _process_question(update, context, text)
+    # Use reply analyzer to determine intent
+    from handlers.reply_analyzer import analyze_reply, get_reply_context
+    from utils.intent_helpers import IntentType
+    
+    # Get full context
+    reply_context = await get_reply_context(update, context)
+    if not reply_context:
+        return
+    
+    # Analyze intent
+    intent_result = await analyze_reply(update, context)
+    
+    # If no clear intent or low confidence, default to question
+    if not intent_result or intent_result.confidence < 0.65:
+        await _process_question(update, context, text)
+        return
+    
+    # Route based on intent type
+    if intent_result.intent_type == IntentType.EDIT_TASK:
+        await _handle_task_edit_from_reply(update, context, reply_context, intent_result)
+    
+    elif intent_result.intent_type == IntentType.EDIT_REMINDER:
+        await _handle_reminder_edit_from_reply(update, context, reply_context, intent_result)
+    
+    elif intent_result.intent_type == IntentType.QUESTION:
+        # Continue dialog
+        question = intent_result.question if intent_result.question else text
+        await _process_question(update, context, question)
+    
+    else:
+        # NONE intent - ignore or treat as question if text is long enough
+        if len(text) >= 10:
+            await _process_question(update, context, text)
+
+
+async def _handle_task_edit_from_reply(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    reply_context: dict,
+    intent_result
+) -> None:
+    """Handle task editing from a reply."""
+    from handlers.tasks import _process_inline_edit
+    
+    task = reply_context.get("task")
+    if not task:
+        await update.message.reply_text("❌ Задача не найдена")
+        return
+    
+    # Build edit args from intent
+    args = intent_result.new_value if intent_result.new_value else update.message.text
+    
+    # Call existing edit handler
+    async with get_session() as session:
+        await _process_inline_edit(update, context, session, task, args)
+
+
+async def _handle_reminder_edit_from_reply(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    reply_context: dict,
+    intent_result
+) -> None:
+    """Handle reminder editing from a reply."""
+    from handlers.tasks import _process_reminder_edit
+    
+    reminder = reply_context.get("reminder")
+    if not reminder:
+        await update.message.reply_text("❌ Напоминание не найдено")
+        return
+    
+    # Build edit args from intent
+    args = intent_result.new_value if intent_result.new_value else update.message.text
+    
+    # Call existing edit handler
+    async with get_session() as session:
+        await _process_reminder_edit(update, context, session, reminder, args)
 

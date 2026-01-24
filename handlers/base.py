@@ -58,6 +58,7 @@ def setup_handlers(app: Application) -> None:
     from handlers.sarcasm import sarcasm_handler
     from handlers.task_detector import analyze_for_tasks, suggest_task_callback, force_detect_handler, handle_task_details
     from handlers.mention_handler import mention_handler, mention_callback_handler
+    from handlers.intent_router import intent_router_handler, intent_callback_handler
     
     # Basic commands
     app.add_handler(CommandHandler("start", start_handler))
@@ -105,6 +106,19 @@ def setup_handlers(app: Application) -> None:
     # Force task detection (for testing)
     app.add_handler(CommandHandler("detect", force_detect_handler))
     
+    # Intent router - auto-detect user intents from natural language (group -1, earliest)
+    # Analyzes messages without commands and routes to appropriate actions
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
+        intent_router_handler
+    ), group=-1)
+    
+    # Intent router for DMs
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+        intent_router_handler
+    ), group=-1)
+    
     # Handle task details input (assignee for suggested tasks) - MUST BE FIRST
     app.add_handler(MessageHandler(
         filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
@@ -130,6 +144,7 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(subscribe_callback_handler, pattern=r"^subscribe:"))
     app.add_handler(CallbackQueryHandler(suggest_task_callback, pattern=r"^suggest_task:"))
     app.add_handler(CallbackQueryHandler(mention_callback_handler, pattern=r"^mention:"))
+    app.add_handler(CallbackQueryHandler(intent_callback_handler, pattern=r"^intent:"))
     
     # Chat member updates
     app.add_handler(MessageHandler(
