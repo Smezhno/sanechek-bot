@@ -160,8 +160,17 @@ async def _execute_task_creation(
             # Extract parsed data
             final_task_text = parsed.get("task", task_text)
             assignee_name = parsed.get("assignee")
-            deadline = parsed.get("deadline")
+            deadline_str = parsed.get("deadline")
             recurrence = parsed.get("recurrence", RecurrenceType.NONE)
+            
+            # Parse deadline string to datetime object
+            deadline = None
+            if deadline_str:
+                try:
+                    from utils.date_parser import parse_deadline
+                    deadline = parse_deadline(deadline_str)
+                except Exception as e:
+                    logger.warning(f"Failed to parse deadline '{deadline_str}': {e}")
             
             # Create task
             task = await _create_task(
