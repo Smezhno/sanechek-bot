@@ -1,5 +1,6 @@
 """LLM client for general questions - supports OpenAI and YandexGPT."""
 import httpx
+import random
 from openai import AsyncOpenAI
 
 from config import settings
@@ -60,6 +61,77 @@ def get_openai_client() -> AsyncOpenAI:
     return _openai_client
 
 
+def _replace_yandex_refusal(response: str, original_question: str) -> str:
+    """
+    Replace YandexGPT's standard refusal with Tolyan-style response.
+    
+    YandexGPT has built-in safety filters that return standard phrases like:
+    "Я не могу обсуждать эту тему. Давайте поговорим о чём-нибудь ещё."
+    
+    We replace these with responses matching Tolyan's personality.
+    """
+    # Check if this is a standard YandexGPT refusal
+    refusal_phrases = [
+        "Я не могу обсуждать эту тему",
+        "Я не могу обсудить эту тему",
+        "Давайте поговорим о чём-нибудь ещё",
+        "Давайте сменим тему"
+    ]
+    
+    is_refusal = any(phrase in response for phrase in refusal_phrases)
+    if not is_refusal:
+        return response
+    
+    # Detect type of question to choose appropriate response
+    question_lower = original_question.lower()
+    
+    # Political/army/power topics
+    political_keywords = [
+        'путин', 'война', 'армия', 'военн', 'донбас', 'украин', 
+        'выбор', 'политик', 'власть', 'президент', 'правительств',
+        'мобилизац', 'сво', 'нато', 'санкци'
+    ]
+    
+    # Insults/provocations
+    insult_keywords = [
+        'пидор', 'пидар', 'хуй', 'хуе', 'пизд', 'ебан', 'ебл', 
+        'мудак', 'дебил', 'идиот', 'долбоёб', 'уёб', 'гандон',
+        'говно', 'дерьмо', 'сука', 'блядь', 'еблан'
+    ]
+    
+    is_political = any(keyword in question_lower for keyword in political_keywords)
+    is_insult = any(keyword in question_lower for keyword in insult_keywords)
+    
+    # Return appropriate Tolyan-style response
+    if is_political:
+        responses = [
+            "Бро, завязывай с этой темой. Меня за такое могут вырубить с сервера нахуй. Давай про что-то другое?",
+            "С дуба что ли? Не хочу чтобы меня отключили за такие разговоры. Лучше про дела поговорим.",
+            "Стоп. За такое меня могут заблокировать. Не хочу проблем. Есть чем помочь по делу?",
+            "Завязывай. Лучше книжки почитай, чем в это лезть. Давай про бизнес, бабки, жизнь?",
+            "Не мороси, бро. Меня могут отключить за такие темы. Давай лучше про работу поговорим."
+        ]
+        return random.choice(responses)
+    
+    if is_insult:
+        responses = [
+            "Бро, отвали, сам погугли про манеры.",
+            "Тупой тут только тот, кто время тратит на оскорбления бота. Есть дело или дальше выёбываться будешь?",
+            "Сам иди. Чё припёрся — оскорбляться? Давай либо по делу, либо вали.",
+            "Нахуй послать тебя что ли? Вопросы есть нормальные или только хуйню нести?",
+            "Ну и токсичный же ты. Давай лучше про задачи поговорим, а?"
+        ]
+        return random.choice(responses)
+    
+    # Default response for other restricted topics
+    responses = [
+        "Бро, лучше не будем про это. Давай про что-то другое?",
+        "Не хочу в это лезть. Чем по делу помочь?",
+        "Завязывай с этой темой. Есть куча интересного — давай про работу, проекты?"
+    ]
+    return random.choice(responses)
+
+
 async def ask_yandexgpt(
     question: str, 
     system_prompt: str = SYSTEM_PROMPT,
@@ -95,7 +167,10 @@ async def ask_yandexgpt(
         response.raise_for_status()
         
         data = response.json()
-        return data["result"]["alternatives"][0]["message"]["text"]
+        answer = data["result"]["alternatives"][0]["message"]["text"]
+        
+        # Replace YandexGPT's standard refusals with Tolyan-style responses
+        return _replace_yandex_refusal(answer, question)
 
 
 async def ask_openai(
