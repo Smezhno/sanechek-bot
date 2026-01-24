@@ -372,16 +372,8 @@ async def _handle_assignee_selection(
             task_data["assignee_id"] = assignee_user.id
             task_data["assignee_name"] = assignee_user.display_name
 
-            await query.edit_message_text(
-                f"📌 {task_data['text']}\n"
-                f"👤 {assignee_user.display_name}\n\n"
-                f"⏰ Когда дедлайн?\n"
-                f"Ответь сообщением (например: завтра, через 3 дня)",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
-                ])
-            )
-            context.user_data["waiting_deadline_for"] = task_hash
+            # Create task immediately without asking for deadline
+            await _create_task_from_data(query, context, task_hash, task_data)
 
 
 async def _handle_self_assign(
@@ -396,16 +388,8 @@ async def _handle_self_assign(
     task_data["assignee_id"] = query.from_user.id
     task_data["assignee_name"] = query.from_user.first_name
 
-    await query.edit_message_text(
-        f"📌 {task_data['text']}\n"
-        f"👤 {query.from_user.first_name}\n\n"
-        f"⏰ Когда дедлайн?\n"
-        f"Ответь сообщением (например: завтра, через 3 дня)",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
-        ])
-    )
-    context.user_data["waiting_deadline_for"] = task_hash
+    # Create task immediately without asking for deadline
+    await _create_task_from_data(query, context, task_hash, task_data)
 
 
 async def _handle_skip_assignee(
@@ -417,23 +401,17 @@ async def _handle_skip_assignee(
         await query.edit_message_text(MSG_EXPIRED)
         return
 
-    await query.edit_message_text(
-        f"📌 {task_data['text']}\n\n"
-        f"⏰ Когда дедлайн?\n"
-        f"Ответь сообщением (например: завтра, через 3 дня, в пятницу)\n"
-        f"Или нажми кнопку:",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
-        ])
-    )
-    context.user_data["waiting_deadline_for"] = task_hash
+    # Create task immediately without asking for deadline
+    await _create_task_from_data(query, context, task_hash, task_data)
 
 
-async def _handle_create_now(
-    query, context: ContextTypes.DEFAULT_TYPE, task_hash: str
+async def _create_task_from_data(
+    query, context: ContextTypes.DEFAULT_TYPE, task_hash: str, task_data: SuggestedTaskData = None
 ) -> None:
-    """Handle 'create task without deadline' action."""
-    task_data = _get_task_data(context, task_hash)
+    """Create task from task_data without deadline."""
+    if not task_data:
+        task_data = _get_task_data(context, task_hash)
+    
     if not task_data:
         await query.edit_message_text(MSG_EXPIRED)
         return
@@ -441,9 +419,10 @@ async def _handle_create_now(
     async with get_session() as session:
         task = Task(
             chat_id=task_data["chat_id"],
-            creator_id=query.from_user.id,
+            author_id=query.from_user.id,
             assignee_id=task_data.get("assignee_id"),
             text=task_data["text"],
+            deadline=None,  # No deadline by default
             status=TaskStatus.OPEN
         )
         session.add(task)
@@ -454,7 +433,7 @@ async def _handle_create_now(
             f"{MSG_TASK_CREATED}\n\n"
             f"📌 {task_data['text']}\n"
             f"👤 {assignee_name}\n"
-            f"📅 Без дедлайна"
+            f"📅 Срок не указан"
         )
 
     _delete_task_data(context, task_hash)
@@ -487,17 +466,8 @@ async def _handle_first_click(
                 task_data["assignee_id"] = assignee_user.id
                 task_data["assignee_name"] = assignee_user.display_name
 
-                await query.edit_message_text(
-                    f"📌 {task_data['text']}\n"
-                    f"👤 {assignee_user.display_name}\n\n"
-                    f"⏰ Когда дедлайн?\n"
-                    f"Ответь сообщением (например: завтра, через 3 дня)",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{task_hash}")]
-                    ])
-                )
-                context.user_data["waiting_deadline_for"] = task_hash
-                logger.info(f"Set waiting_deadline_for={task_hash} for user {query.from_user.id}")
+                # Create task immediately without asking for deadline
+                await _create_task_from_data(query, context, task_hash, task_data)
                 return
 
     # No assignee found, ask for it
@@ -537,10 +507,6 @@ async def suggest_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     if action == "skip_assignee":
         await _handle_skip_assignee(query, context, task_hash)
-        return
-
-    if action == "create_now":
-        await _handle_create_now(query, context, task_hash)
         return
 
     # First click - action is actually the task_hash
@@ -657,48 +623,7 @@ async def _handle_assignee_input(
 
     del context.user_data["waiting_assignee_for"]
 
-    # Ask for deadline
-    assignee_display = task_data.get("assignee_name", "Не указан")
-    await update.message.reply_text(
-        f"👍 Исполнитель: {assignee_display}\n\n"
-        f"⏰ Когда дедлайн?\n"
-        f"(например: завтра, через 3 дня, в пятницу)",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📅 Без дедлайна", callback_data=f"suggest_task:create_now:{assignee_hash}")]
-        ])
-    )
-    context.user_data["waiting_deadline_for"] = assignee_hash
-
-
-async def _handle_deadline_input(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    text: str,
-    deadline_hash: str
-) -> None:
-    """Handle text input for deadline."""
-    logger.info(f"Processing deadline input: text='{text}', hash={deadline_hash}")
-
-    task_data = _get_task_data(context, deadline_hash)
-    if not task_data:
-        logger.warning(f"Task data not found for hash {deadline_hash}")
-        await update.message.reply_text("⏰ Предложение устарело. Создай задачу заново: /task")
-        del context.user_data["waiting_deadline_for"]
-        return
-
-    try:
-        deadline = parse_deadline(text)
-        logger.info(f"Parsed deadline: {deadline}")
-    except DateParseError as e:
-        logger.warning(f"Date parse error: {e}")
-        await update.message.reply_text(
-            f"❌ Не понял дату: {str(e)}\n\n"
-            f"Попробуй ещё раз (например: завтра, через 3 дня, в пятницу в 16:00)"
-        )
-        return
-
-    del context.user_data["waiting_deadline_for"]
-
+    # Create task immediately without asking for deadline
     async with get_session() as session:
         # Resolve assignee_id if we only have name
         assignee_id = task_data.get("assignee_id")
@@ -716,35 +641,23 @@ async def _handle_deadline_input(
         task = Task(
             chat_id=task_data["chat_id"],
             author_id=update.effective_user.id,
-            assignee_id=assignee_id or update.effective_user.id,
+            assignee_id=assignee_id,
             text=task_data["text"],
-            deadline=deadline,
+            deadline=None,  # No deadline by default
             status=TaskStatus.OPEN
         )
         session.add(task)
         await session.commit()
-        logger.info(f"Task created: id={task.id}, text='{task.text}', assignee_id={task.assignee_id}, deadline={task.deadline}")
 
-        # Get assignee name for display
-        if assignee_id:
-            result = await session.execute(
-                select(User).where(User.id == assignee_id)
-            )
-            assignee_user = result.scalar_one_or_none()
-            assignee_display = assignee_user.display_name if assignee_user else task_data.get("assignee_name", "Не назначен")
-        else:
-            assignee_display = task_data.get("assignee_name", "Не назначен")
-
-        deadline_str = format_date(deadline, include_time=True)
-
+        assignee_display = task_data.get("assignee_name", "Не назначен")
         await update.message.reply_text(
             f"{MSG_TASK_CREATED}\n\n"
             f"📌 {task_data['text']}\n"
             f"👤 {assignee_display}\n"
-            f"📅 {deadline_str}"
+            f"📅 Срок не указан"
         )
 
-    _delete_task_data(context, deadline_hash)
+    _delete_task_data(context, assignee_hash)
 
 
 def _is_reply_to_bot_time_request(update: Update) -> bool:
@@ -762,7 +675,7 @@ def _is_reply_to_bot_time_request(update: Update) -> bool:
 
 
 async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle assignee/deadline input for suggested tasks."""
+    """Handle assignee input for suggested tasks."""
     logger.info(
         f"handle_task_details invoked: "
         f"user_id={update.effective_user.id if update.effective_user else None}, "
@@ -776,26 +689,19 @@ async def handle_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = update.message.text.strip()
 
     waiting_assignee = context.user_data.get("waiting_assignee_for")
-    waiting_deadline = context.user_data.get("waiting_deadline_for")
 
     logger.info(
         f"handle_task_details: text='{text}', "
-        f"waiting_assignee={waiting_assignee}, waiting_deadline={waiting_deadline}, "
+        f"waiting_assignee={waiting_assignee}, "
         f"user_data keys={list(context.user_data.keys())}"
     )
 
-    if not waiting_assignee and not waiting_deadline:
-        logger.debug(f"handle_task_details: not waiting for anything, text='{text}'")
+    if not waiting_assignee:
+        logger.debug(f"handle_task_details: not waiting for assignee, text='{text}'")
         return
 
     if _is_reply_to_bot_time_request(update):
         logger.info("Skipping: reply to bot asking for time")
         return
 
-    if waiting_assignee:
-        await _handle_assignee_input(update, context, text, waiting_assignee)
-        return
-
-    if waiting_deadline:
-        await _handle_deadline_input(update, context, text, waiting_deadline)
-        return
+    await _handle_assignee_input(update, context, text, waiting_assignee)
