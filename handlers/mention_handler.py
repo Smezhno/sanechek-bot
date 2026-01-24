@@ -31,7 +31,6 @@ MSG_TASK_NO_TEXT = "Не понял, какую задачу создать. Н�
 MSG_EXPIRED = "⏰ Предложение устарело"
 MSG_USER_NOT_FOUND = "Не нашёл пользователя {name} в этом чате"
 MSG_MULTIPLE_MATCHES = "Найдено несколько совпадений. Выбери исполнителя:"
-MSG_ASK_DEADLINE = "⏰ Когда дедлайн?\nНапиши сообщением (например: завтра, через 3 дня)"
 MSG_NO_API_KEY = "❌ LLM не настроен. Используй /task для создания задачи."
 
 
@@ -363,16 +362,6 @@ def _build_assignee_buttons(
     return InlineKeyboardMarkup(buttons)
 
 
-def _build_deadline_buttons(task_hash: str) -> InlineKeyboardMarkup:
-    """Build deadline selection buttons."""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "📅 Без дедлайна",
-                callback_data=f"mention:no_deadline:{task_hash}"
-            )
-        ]
-    ])
 
 
 def _recurrence_from_string(value: str) -> RecurrenceType:
@@ -419,7 +408,7 @@ def _format_task_confirmation(
     if deadline:
         lines.append(f"📅 {format_date(deadline, include_time=True)}")
     else:
-        lines.append("📅 Без дедлайна")
+        lines.append("📅 Срок не указан")
 
     if recurrence != RecurrenceType.NONE:
         recurrence_labels = {
@@ -561,21 +550,7 @@ async def mention_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 return
 
-            # Need deadline and don't have one?
-            if deadline is None:
-                keyboard = _build_deadline_buttons(task_hash)
-                display_assignee = assignee_name or "Без исполнителя"
-
-                await message.reply_text(
-                    f"📌 {task_text}\n"
-                    f"👤 {display_assignee}\n\n"
-                    f"{MSG_ASK_DEADLINE}",
-                    reply_markup=keyboard
-                )
-                context.user_data["mention_waiting_deadline"] = task_hash
-                return
-
-            # Have everything - create task immediately
+            # Create task immediately without asking for deadline
             task = await _create_task(session, pending_data)
 
             confirmation = _format_task_confirmation(
@@ -620,97 +595,36 @@ async def mention_callback_handler(
                 pending["assignee_id"] = assignee_id
                 pending["assignee_name"] = None
 
-        _store_pending_data(context, task_hash, pending)
-
-        # Ask for deadline
-        display_assignee = pending.get("assignee_name") or "Выбран"
-        keyboard = _build_deadline_buttons(task_hash)
-
-        await query.edit_message_text(
-            f"📌 {pending['text']}\n"
-            f"👤 {display_assignee}\n\n"
-            f"{MSG_ASK_DEADLINE}",
-            reply_markup=keyboard
-        )
-        context.user_data["mention_waiting_deadline"] = task_hash
-        return
-
-    if action == "no_assignee":
-        pending["assignee_id"] = None
-        pending["assignee_name"] = None
-        _store_pending_data(context, task_hash, pending)
-
-        keyboard = _build_deadline_buttons(task_hash)
-
-        await query.edit_message_text(
-            f"📌 {pending['text']}\n"
-            f"👤 Без исполнителя\n\n"
-            f"{MSG_ASK_DEADLINE}",
-            reply_markup=keyboard
-        )
-        context.user_data["mention_waiting_deadline"] = task_hash
-        return
-
-    if action == "no_deadline":
-        # Create task without deadline
-        async with get_session() as session:
-            pending["deadline"] = None
+            # Create task immediately without asking for deadline
             task = await _create_task(session, pending)
 
             confirmation = _format_task_confirmation(
                 pending["text"],
                 pending.get("assignee_name"),
-                None,
+                pending.get("deadline"),
                 pending.get("recurrence", RecurrenceType.NONE)
             )
             await query.edit_message_text(confirmation)
 
         _delete_pending_data(context, task_hash)
-        context.user_data.pop("mention_waiting_deadline", None)
         return
 
+    if action == "no_assignee":
+        pending["assignee_id"] = None
+        pending["assignee_name"] = None
 
-async def mention_deadline_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Handle deadline text input for mention-created tasks."""
-    if not update.message or not update.message.text:
+        # Create task immediately without asking for deadline
+        async with get_session() as session:
+            task = await _create_task(session, pending)
+
+            confirmation = _format_task_confirmation(
+                pending["text"],
+                None,
+                pending.get("deadline"),
+                pending.get("recurrence", RecurrenceType.NONE)
+            )
+            await query.edit_message_text(confirmation)
+
+        _delete_pending_data(context, task_hash)
         return
 
-    task_hash = context.user_data.get("mention_waiting_deadline")
-    if not task_hash:
-        return
-
-    pending = _get_pending_data(context, task_hash)
-    if not pending:
-        context.user_data.pop("mention_waiting_deadline", None)
-        return
-
-    text = update.message.text.strip()
-
-    try:
-        deadline = parse_deadline(text)
-    except DateParseError as e:
-        await update.message.reply_text(
-            f"❌ Не понял дату: {e}\n\n"
-            f"Попробуй ещё раз (например: завтра, через 3 дня, в пятницу)",
-            reply_markup=_build_deadline_buttons(task_hash)
-        )
-        return
-
-    # Create task with deadline
-    async with get_session() as session:
-        pending["deadline"] = deadline
-        task = await _create_task(session, pending)
-
-        confirmation = _format_task_confirmation(
-            pending["text"],
-            pending.get("assignee_name"),
-            deadline,
-            pending.get("recurrence", RecurrenceType.NONE)
-        )
-        await update.message.reply_text(confirmation)
-
-    _delete_pending_data(context, task_hash)
-    context.user_data.pop("mention_waiting_deadline", None)

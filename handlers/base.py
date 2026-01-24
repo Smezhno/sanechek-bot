@@ -57,7 +57,7 @@ def setup_handlers(app: Application) -> None:
     from handlers.ask import ask_handler, reply_to_bot_handler
     from handlers.sarcasm import sarcasm_handler
     from handlers.task_detector import analyze_for_tasks, suggest_task_callback, force_detect_handler, handle_task_details
-    from handlers.mention_handler import mention_handler, mention_callback_handler, mention_deadline_handler
+    from handlers.mention_handler import mention_handler, mention_callback_handler
     
     # Basic commands
     app.add_handler(CommandHandler("start", start_handler))
@@ -105,16 +105,10 @@ def setup_handlers(app: Application) -> None:
     # Force task detection (for testing)
     app.add_handler(CommandHandler("detect", force_detect_handler))
     
-    # Handle task details input (assignee/deadline for suggested tasks) - MUST BE FIRST
+    # Handle task details input (assignee for suggested tasks) - MUST BE FIRST
     app.add_handler(MessageHandler(
         filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
         handle_task_details
-    ), group=0)
-
-    # Handle deadline input for @bot mention tasks (group 0, same as task details)
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        mention_deadline_handler
     ), group=0)
 
     # Handle time input for reminders (group 0)
