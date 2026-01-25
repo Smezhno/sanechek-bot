@@ -72,13 +72,29 @@ PARSE_MENTION_PROMPT = """Разбери текст и извлеки компо
 4. recurrence - тип повтора: none, daily, weekdays, weekly, weekly_monday, weekly_tuesday, weekly_wednesday, weekly_thursday, weekly_friday, weekly_saturday, weekly_sunday, monthly
 5. confidence - уверенность в исполнителе от 0.0 до 1.0
 
-Признаки самоназначения (confidence >= 0.7):
-- "мне надо", "я должен", "я куплю", "я сделаю"
-- глаголы первого лица
+ВАЖНО: Определение исполнителя по контексту:
+- "Встретиться с Витей" → исполнитель = "я" (автор должен встретиться с Витей)
+- "Вите встретиться со мной" → исполнитель = "Витя" (Витя должен встретиться)
+- "Позвонить Саше" → исполнитель = "я" (автор должен позвонить)
+- "Саше позвонить мне" → исполнитель = "Саша" (Саша должен позвонить)
+- "Купить молоко" → исполнитель = "я" (если явно не указано иначе)
+- "Вите купить молоко" → исполнитель = "Витя"
+
+Признаки самоназначения (assignee = "я", confidence >= 0.7):
+- "мне надо", "я должен", "я куплю", "я сделаю", "я встречусь"
+- "встретиться с X", "позвонить X", "написать X" (автор выполняет действие)
+- глаголы первого лица без указания другого исполнителя
+
+Признаки назначения другому (assignee = имя/@username, confidence >= 0.7):
+- "X встретиться со мной", "X позвонить мне", "X написать мне"
+- "X должен", "X нужно", "X надо"
+- Прямое указание имени в дательном падеже как исполнителя
 
 Признаки низкой уверенности (confidence < 0.7):
 - "надо бы", "нужно" без указания кому
-- общие обсуждения
+- общие обсуждения без явного исполнителя
+
+Если исполнитель указан, но не найден среди участников - верни его имя как есть (assignee = имя), система сама обработает.
 
 Ответ ТОЛЬКО в формате JSON:
 {{"task": "...", "assignee": "...", "deadline": "...", "recurrence": "none", "confidence": 0.0}}"""
@@ -263,26 +279,36 @@ def _parse_mention_fallback(text: str) -> ParsedMention:
             # Remove the @username from task text
             task_text = re.sub(rf"@{username}\s*", "", task_text, flags=re.IGNORECASE).strip()
 
-    # Check for self-assignment patterns
-    confidence = 0.5
-    self_patterns = [
-        # Strong patterns (high confidence)
-        (r"\bмне\s+надо\b", 0.8),
-        (r"\bя\s+должен\b", 0.8),
-        (r"\bя\s+куплю\b", 0.8),
-        (r"\bя\s+сделаю\b", 0.8),
-        (r"\bмне\s+нужно\b", 0.8),
-        (r"\bнадо\s+мне\b", 0.8),
-        # Weaker patterns (moderate confidence)
-        (r"\bмне$", 0.7),  # "мне" at end of text
-        (r"\bсебе\b", 0.7),
-        (r"\bдля\s+себя\b", 0.8),
-    ]
-    for pattern, conf in self_patterns:
-        if re.search(pattern, task_text, re.IGNORECASE):
-            assignee = "я"
-            confidence = conf
-            break
+    # Check for patterns like "Вите встретиться со мной" (assignee is the person in dative case)
+    # Pattern: имя в дательном падеже + глагол + "мне"/"со мной"
+    dative_assignee_pattern = r"(\w+)(?:у|е|ю)\s+(?:встретиться|позвонить|написать|сделать|купить|выполнить)\s+(?:мне|со\s+мной|мне\s+в|мне\s+на)"
+    dative_match = re.search(dative_assignee_pattern, task_text, re.IGNORECASE)
+    if dative_match and not assignee:
+        assignee = dative_match.group(1)  # Extract the name (e.g., "Вит" from "Вите")
+        confidence = 0.8
+    else:
+        # Check for self-assignment patterns
+        confidence = 0.5
+        self_patterns = [
+            # Strong patterns (high confidence)
+            (r"\bмне\s+надо\b", 0.8),
+            (r"\bя\s+должен\b", 0.8),
+            (r"\bя\s+куплю\b", 0.8),
+            (r"\bя\s+сделаю\b", 0.8),
+            (r"\bмне\s+нужно\b", 0.8),
+            (r"\bнадо\s+мне\b", 0.8),
+            # Patterns like "встретиться с X", "позвонить X" (author performs action - self-assignment)
+            (r"\b(?:встретиться|позвонить|написать|купить|сделать)\s+(?:с\s+)?\w+\b", 0.7),
+            # Weaker patterns (moderate confidence)
+            (r"\bмне$", 0.7),  # "мне" at end of text
+            (r"\bсебе\b", 0.7),
+            (r"\bдля\s+себя\b", 0.8),
+        ]
+        for pattern, conf in self_patterns:
+            if re.search(pattern, task_text, re.IGNORECASE):
+                assignee = "я"
+                confidence = conf
+                break
 
     # Extract recurrence
     recurrence, clean_text = _parse_recurrence_from_text(task_text)
@@ -621,6 +647,14 @@ async def mention_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 assignee_user = result.scalar_one_or_none()
                 if assignee_user:
                     assignee_name = assignee_user.display_name
+
+            # If assignee was specified but not found, just set to None (create task without assignee)
+            # This handles cases like "Вите встретиться со мной" where Витя is not in chat
+            parsed_assignee = parsed.get("assignee")
+            if parsed_assignee and parsed_assignee not in ["я", None] and not assignee_id:
+                # Assignee was specified but not found - create task without assignee
+                assignee_id = None
+                assignee_name = None
 
             # Generate hash for pending data
             task_hash = _compute_hash(f"{chat.id}:{user.id}:{task_text}")
