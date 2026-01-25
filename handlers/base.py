@@ -40,7 +40,7 @@ def setup_handlers(app: Application) -> None:
         get_task_conversation_handler,
         get_edit_conversation_handler,
         tasks_handler, mytasks_handler, done_handler,
-        task_callback_handler, tasks_filter_callback
+        task_callback_handler, tasks_filter_callback, mytasks_callback_handler
     )
     from handlers.expenses import get_cost_conversation_handler
     from handlers.reminders import (
@@ -139,6 +139,7 @@ def setup_handlers(app: Application) -> None:
     ), group=0)
     
     # Callback query handlers
+    app.add_handler(CallbackQueryHandler(mytasks_callback_handler, pattern=r"^mytasks:"))
     app.add_handler(CallbackQueryHandler(task_callback_handler, pattern=r"^task:"))
     app.add_handler(CallbackQueryHandler(tasks_filter_callback, pattern=r"^tasks:filter:"))
     app.add_handler(CallbackQueryHandler(reminder_callback_handler, pattern=r"^reminder:"))

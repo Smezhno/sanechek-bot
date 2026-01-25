@@ -121,13 +121,28 @@ def _replace_yandex_refusal(response: str, original_question: str) -> str:
         return random.choice(responses)
     
     if is_insult:
-        responses = [
-            "Бро, отвали, сам погугли про манеры.",
-            "Тупой тут только тот, кто время тратит на оскорбления бота. Есть дело или дальше выёбываться будешь?",
-            "Сам иди. Чё припёрся — оскорбляться? Давай либо по делу, либо вали.",
-            "Нахуй послать тебя что ли? Вопросы есть нормальные или только хуйню нести?",
-            "Ну и токсичный же ты. Давай лучше про задачи поговорим, а?"
-        ]
+        # Check if it's a simple insult (just calling names) vs aggressive provocation
+        simple_insults = ['пидор', 'пидар', 'дебил', 'идиот', 'дурак', 'тупой']
+        is_simple_insult = any(insult in question_lower for insult in simple_insults) and len(question_lower.split()) <= 5
+        
+        if is_simple_insult:
+            # More friendly responses for simple name-calling
+            responses = [
+                "Ок, понял. Есть что-то по делу?",
+                "Ладно, ладно. Чем помочь?",
+                "Понял тебя. Вопросы есть или просто поздороваться?",
+                "Окей. Что нужно?",
+                "Понял. Есть задачи или вопросы?"
+            ]
+        else:
+            # More aggressive responses for serious insults/provocations
+            responses = [
+                "Бро, отвали, сам погугли про манеры.",
+                "Тупой тут только тот, кто время тратит на оскорбления бота. Есть дело или дальше выёбываться будешь?",
+                "Сам иди. Чё припёрся — оскорбляться? Давай либо по делу, либо вали.",
+                "Нахуй послать тебя что ли? Вопросы есть нормальные или только хуйню нести?",
+                "Ну и токсичный же ты. Давай лучше про задачи поговорим, а?"
+            ]
         return random.choice(responses)
     
     # Default response for other restricted topics

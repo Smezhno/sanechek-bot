@@ -1255,8 +1255,50 @@ async def tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("\n".join(lines), reply_markup=keyboard)
 
 
+def _build_mytasks_keyboard(tasks: list[Task]) -> InlineKeyboardMarkup:
+    """Build keyboard for /mytasks with task list."""
+    buttons = []
+    
+    for task in tasks:
+        # Status icon: ✅ for normal, ⚠️ for overdue
+        status_icon = "⚠️" if task.is_overdue else "✅"
+        
+        # Task text (will be shown in message, not in button)
+        # Buttons: status icon, edit button, close button
+        row = [
+            InlineKeyboardButton("✏️", callback_data=f"mytasks:edit:{task.id}"),
+            InlineKeyboardButton("✅", callback_data=f"mytasks:close:{task.id}")
+        ]
+        buttons.append(row)
+    
+    # Close button at the bottom
+    buttons.append([InlineKeyboardButton("❌ Закрыть", callback_data="mytasks:close_form")])
+    
+    return InlineKeyboardMarkup(buttons)
+
+
+def _format_mytasks_message(tasks: list[Task]) -> str:
+    """Format message for /mytasks command."""
+    lines = ["📋 Твои задачи:\n"]
+    
+    for i, task in enumerate(tasks, 1):
+        # Status icon
+        status_icon = "⚠️" if task.is_overdue else "✅"
+        
+        # Deadline
+        if task.deadline:
+            deadline_str = format_date(task.deadline, include_time=True)
+        else:
+            deadline_str = "нет ддл"
+        
+        # Format: [icon] [text] | [deadline]
+        lines.append(f"{status_icon} {task.text}\n   | {deadline_str}\n")
+    
+    return "\n".join(lines)
+
+
 async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /mytasks command - list user's tasks."""
+    """Handle /mytasks command - list user's tasks with interactive form."""
     try:
         user_id = update.effective_user.id
         chat_type = update.effective_chat.type
@@ -1274,22 +1316,19 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     )
                     .order_by(Task.deadline)
                 )
-                tasks = result.scalars().all()
+                tasks = list(result.scalars().all())
 
                 if not tasks:
                     await update.message.reply_text(MSG_NO_YOUR_TASKS_IN_CHAT)
                     return
 
-                lines = ["📋 Твои задачи в этом чате:\n"]
-
-                for i, task in enumerate(tasks, 1):
-                    deadline_str = format_date(task.deadline) if task.deadline else "не указан"
-                    overdue = " ⚠️ просрочена" if task.is_overdue else ""
-                    lines.append(f"{i}. {task.text} | Дедлайн: {deadline_str}{overdue}")
-
-                await update.message.reply_text("\n".join(lines))
+                # Build message and keyboard
+                message_text = _format_mytasks_message(tasks)
+                keyboard = _build_mytasks_keyboard(tasks)
+                
+                await update.message.reply_text(message_text, reply_markup=keyboard)
             else:
-                # In DM - show all tasks grouped by chat
+                # In DM - show all tasks from all chats
                 result = await session.execute(
                     select(Task)
                     .where(
@@ -1298,57 +1337,17 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     )
                     .order_by(Task.deadline)
                 )
-                tasks = result.scalars().all()
+                tasks = list(result.scalars().all())
 
                 if not tasks:
                     await update.message.reply_text(MSG_NO_YOUR_TASKS)
                     return
 
-                # Group by chat
-                by_chat = {}
-                for task in tasks:
-                    if task.chat_id not in by_chat:
-                        by_chat[task.chat_id] = []
-                    by_chat[task.chat_id].append(task)
-
-                # Send each task as separate message with buttons
-                for task_chat_id, chat_tasks in by_chat.items():
-                    result = await session.execute(
-                        select(Chat).where(Chat.id == task_chat_id)
-                    )
-                    chat = result.scalar_one_or_none()
-                    chat_title = chat.title if chat else f"Чат {task_chat_id}"
-
-                    for task in chat_tasks:
-                        result = await session.execute(
-                            select(User).where(User.id == task.author_id)
-                        )
-                        author = result.scalar_one_or_none()
-
-                        deadline_str = format_date(task.deadline) if task.deadline else "не указан"
-                        overdue = "\n⚠️ Просрочена!" if task.is_overdue else ""
-
-                        author_name = author.display_name if author else "Неизвестен"
-                        text = (
-                            f"📌 {task.text}\n"
-                            f"Чат: {chat_title}\n"
-                            f"Автор: {author_name}\n"
-                            f"Дедлайн: {deadline_str}{overdue}"
-                        )
-
-                        keyboard = _build_task_action_keyboard(task.id)
-                        await update.message.reply_text(text, reply_markup=keyboard)
-
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(
-                        "📋 Показать закрытые задачи",
-                        callback_data="task:show_closed"
-                    )]
-                ])
-                await update.message.reply_text(
-                    "Это все твои активные задачи.",
-                    reply_markup=keyboard
-                )
+                # Build message and keyboard (all tasks in one form)
+                message_text = _format_mytasks_message(tasks)
+                keyboard = _build_mytasks_keyboard(tasks)
+                
+                await update.message.reply_text(message_text, reply_markup=keyboard)
     except Exception as e:
         logger.exception(f"Error in mytasks_handler: {e}")
         error_msg = f"❌ Ошибка при получении задач: {type(e).__name__}"
@@ -1628,7 +1627,7 @@ async def _process_inline_edit(
         try:
             new_deadline = parse_deadline(deadline_text)
             task.deadline = new_deadline
-            changes.append(f"Новый дедлайн: {format_date(new_deadline)}")
+            changes.append(f"📅 Дедлайн: {format_date(new_deadline, include_time=True)}")
         except DateParseError as e:
             await update.message.reply_text(f"Ошибка в дедлайне: {e}")
             return ConversationHandler.END
@@ -1663,23 +1662,23 @@ async def _process_inline_edit(
 
     # Smart parsing if no keywords found
     if not changes:
-        # First, try to extract time only (for editing time on existing deadline)
-        from utils.date_parser import _extract_time
-        hour, minute, remaining_after_time = _extract_time(args_clean)
-        
-        # If only time specified and task has existing deadline, update time only
-        if hour is not None and task.deadline and not remaining_after_time.strip():
-            # Update only time, keep existing date
-            new_deadline = task.deadline.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # Try to parse as full deadline (handles both date and time)
+        try:
+            new_deadline = parse_deadline(args_clean)
             task.deadline = new_deadline
-            changes.append(f"📅 Дедлайн: {format_date(new_deadline)}")
-        else:
-            # Try to parse as full deadline
-            try:
-                new_deadline = parse_deadline(args_clean)
+            changes.append(f"📅 Дедлайн: {format_date(new_deadline, include_time=True)}")
+        except DateParseError:
+            # If parsing failed, try to extract time only (for editing time on existing deadline)
+            from utils.date_parser import _extract_time
+            hour, minute, remaining_after_time = _extract_time(args_clean)
+            
+            # If only time specified and task has existing deadline, update time only
+            if hour is not None and task.deadline and not remaining_after_time.strip():
+                # Update only time, keep existing date
+                new_deadline = task.deadline.replace(hour=hour, minute=minute, second=0, microsecond=0)
                 task.deadline = new_deadline
-                changes.append(f"📅 Дедлайн: {format_date(new_deadline)}")
-            except DateParseError:
+                changes.append(f"📅 Дедлайн: {format_date(new_deadline, include_time=True)}")
+            else:
                 # Not a deadline, try to find assignee
                 # Check for @username
                 username_match = re.search(r"@(\w+)", args_clean)
@@ -1839,12 +1838,290 @@ async def receive_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         # Commit all changes
         await session.commit()
+        
+        # Check if editing started from mytasks - return to list
+        mytasks_edit = context.user_data.get("mytasks_edit")
+        if mytasks_edit:
+            user_id = mytasks_edit["user_id"]
+            chat_id = mytasks_edit.get("chat_id")
+            context.user_data.pop("mytasks_edit", None)
+            
+            # Show updated task list
+            await _mytasks_show_list_for_user(update, context, user_id, chat_id)
+            context.user_data.clear()
+            return ConversationHandler.END
 
     context.user_data.clear()
     return ConversationHandler.END
 
 
+async def _mytasks_show_list_for_user(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    chat_id: Optional[int]
+) -> None:
+    """Show mytasks list for user (used after editing)."""
+    async with get_session() as session:
+        if chat_id:
+            # In group - show tasks from this chat
+            result = await session.execute(
+                select(Task)
+                .where(
+                    Task.assignee_id == user_id,
+                    Task.chat_id == chat_id,
+                    Task.status == TaskStatus.OPEN
+                )
+                .order_by(Task.deadline)
+            )
+        else:
+            # In DM - show all tasks
+            result = await session.execute(
+                select(Task)
+                .where(
+                    Task.assignee_id == user_id,
+                    Task.status == TaskStatus.OPEN
+                )
+                .order_by(Task.deadline)
+            )
+        tasks = list(result.scalars().all())
+        
+        if not tasks:
+            msg = MSG_NO_YOUR_TASKS_IN_CHAT if chat_id else MSG_NO_YOUR_TASKS
+            if update.message:
+                await update.message.reply_text(msg)
+            else:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
+            return
+        
+        message_text = _format_mytasks_message(tasks)
+        keyboard = _build_mytasks_keyboard(tasks)
+        
+        if update.message:
+            await update.message.reply_text(message_text, reply_markup=keyboard)
+        else:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=message_text,
+                reply_markup=keyboard
+            )
+
+
 # --- Callback Handlers ---
+
+async def mytasks_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle mytasks callback queries."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split(":")
+    action = data[1]
+    user_id = update.effective_user.id
+
+    if action == "close":
+        # Close single task
+        task_id = int(data[2])
+        await _mytasks_close_task(update, context, task_id)
+    
+    elif action == "edit":
+        # Edit task
+        task_id = int(data[2])
+        await _mytasks_edit_task(update, context, task_id)
+    
+    elif action == "close_form":
+        # Close the form
+        await query.edit_message_text("📋 Список задач закрыт.")
+    
+    elif action == "back_to_list":
+        # Return to task list
+        chat_id = int(data[2]) if len(data) > 2 else None
+        await _mytasks_show_list(update, context, user_id, chat_id)
+
+
+async def _mytasks_close_task(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    task_id: int
+) -> None:
+    """Close task from mytasks form and update the list."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    
+    # Track closed tasks for batch notification
+    if "mytasks_closed" not in context.user_data:
+        context.user_data["mytasks_closed"] = []
+    
+    async with get_session() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        task = result.scalar_one_or_none()
+        
+        if not task or task.status == TaskStatus.CLOSED:
+            await query.answer("Задача уже закрыта", show_alert=True)
+            return
+        
+        if task.assignee_id != user_id:
+            await query.answer("Это не твоя задача", show_alert=True)
+            return
+        
+        # Close the task
+        task.status = TaskStatus.CLOSED
+        task.closed_at = datetime.utcnow()
+        task.closed_by = user_id
+        
+        # Create next recurring task if needed
+        next_task = await _create_next_recurring_task(session, task)
+        
+        # Store closed task info for batch notification
+        context.user_data["mytasks_closed"].append({
+            "task": task,
+            "next_task": next_task
+        })
+        
+        # Get remaining tasks (all tasks if in DM, or tasks from same chat if in group)
+        chat_type = update.effective_chat.type
+        if chat_type == "private":
+            # In DM - show all tasks from all chats
+            result = await session.execute(
+                select(Task)
+                .where(
+                    Task.assignee_id == user_id,
+                    Task.status == TaskStatus.OPEN
+                )
+                .order_by(Task.deadline)
+            )
+        else:
+            # In group - show tasks from this chat only
+            result = await session.execute(
+                select(Task)
+                .where(
+                    Task.assignee_id == user_id,
+                    Task.chat_id == task.chat_id,
+                    Task.status == TaskStatus.OPEN
+                )
+                .order_by(Task.deadline)
+            )
+        remaining_tasks = list(result.scalars().all())
+        
+        # Get user info
+        result = await session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one()
+        
+        # Update the message
+        if remaining_tasks:
+            message_text = _format_mytasks_message(remaining_tasks)
+            keyboard = _build_mytasks_keyboard(remaining_tasks)
+            await query.edit_message_text(message_text, reply_markup=keyboard)
+        else:
+            await query.edit_message_text("📋 Все задачи выполнены! 🎉")
+        
+        await session.commit()
+        
+        # Send notification
+        closed_tasks = context.user_data["mytasks_closed"]
+        if len(closed_tasks) == 1:
+            # Single task closed - format: [Имя] закрыл [задачу]
+            closed_msg = f'✅ {user.display_name} закрыл "{task.text}"'
+            
+            # Get author for FYI
+            result = await session.execute(select(User).where(User.id == task.author_id))
+            author = result.scalar_one_or_none()
+            if author and author.id != user_id:
+                closed_msg += f"\n👤 {author.id} FYI"
+            
+            # Send to chat if in group
+            if chat_type != "private":
+                await context.bot.send_message(chat_id=task.chat_id, text=closed_msg)
+        
+        # Clear closed tasks list after sending
+        context.user_data["mytasks_closed"] = []
+
+
+async def _mytasks_edit_task(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    task_id: int
+) -> None:
+    """Show edit form for task."""
+    query = update.callback_query
+    
+    async with get_session() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        task = result.scalar_one_or_none()
+        
+        if not task:
+            await query.answer("Задача не найдена", show_alert=True)
+            return
+        
+        # Mark that editing started from mytasks
+        context.user_data["mytasks_edit"] = {
+            "task_id": task_id,
+            "chat_id": task.chat_id,
+            "user_id": update.effective_user.id
+        }
+        
+        # Get assignee
+        assignee_name = "Не назначен"
+        if task.assignee_id:
+            result = await session.execute(select(User).where(User.id == task.assignee_id))
+            assignee = result.scalar_one_or_none()
+            if assignee:
+                assignee_name = assignee.display_name
+        
+        # Format message
+        deadline_str = format_date(task.deadline, include_time=True) if task.deadline else "не указан"
+        
+        message_text = (
+            f"✏️ Редактирование задачи:\n\n"
+            f"📌 {task.text}\n"
+            f"📅 Дедлайн: {deadline_str}\n"
+            f"👤 Исполнитель: {assignee_name}\n\n"
+            f"Что изменить?"
+        )
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Текст", callback_data=f"task:edit_field:text:{task_id}"),
+                InlineKeyboardButton("Дедлайн", callback_data=f"task:edit_field:deadline:{task_id}"),
+                InlineKeyboardButton("Исполнитель", callback_data=f"task:edit_field:assignee:{task_id}"),
+            ],
+            [
+                InlineKeyboardButton("« Назад к списку", callback_data=f"mytasks:back_to_list:{task.chat_id}")
+            ]
+        ])
+        
+        await query.edit_message_text(message_text, reply_markup=keyboard)
+
+
+async def _mytasks_show_list(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    chat_id: int
+) -> None:
+    """Show mytasks list."""
+    query = update.callback_query
+    
+    async with get_session() as session:
+        result = await session.execute(
+            select(Task)
+            .where(
+                Task.assignee_id == user_id,
+                Task.chat_id == chat_id,
+                Task.status == TaskStatus.OPEN
+            )
+            .order_by(Task.deadline)
+        )
+        tasks = list(result.scalars().all())
+        
+        if not tasks:
+            await query.edit_message_text(MSG_NO_YOUR_TASKS_IN_CHAT)
+            return
+        
+        message_text = _format_mytasks_message(tasks)
+        keyboard = _build_mytasks_keyboard(tasks)
+        
+        await query.edit_message_text(message_text, reply_markup=keyboard)
+
 
 async def task_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle task-related callback queries."""
