@@ -1260,11 +1260,7 @@ def _build_mytasks_keyboard(tasks: list[Task]) -> InlineKeyboardMarkup:
     buttons = []
     
     for task in tasks:
-        # Status icon: ✅ for normal, ⚠️ for overdue
-        status_icon = "⚠️" if task.is_overdue else "✅"
-        
-        # Task text (will be shown in message, not in button)
-        # Buttons: status icon, edit button, close button
+        # Buttons in one row: edit and close buttons
         row = [
             InlineKeyboardButton("✏️", callback_data=f"mytasks:edit:{task.id}"),
             InlineKeyboardButton("✅", callback_data=f"mytasks:close:{task.id}")
@@ -1292,6 +1288,7 @@ def _format_mytasks_message(tasks: list[Task]) -> str:
             deadline_str = "нет ддл"
         
         # Format: [icon] [text] | [deadline]
+        # Full task text is shown, not truncated
         lines.append(f"{status_icon} {task.text}\n   | {deadline_str}\n")
     
     return "\n".join(lines)
@@ -2006,6 +2003,54 @@ async def _mytasks_close_task(
         result = await session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one()
         
+        await session.commit()
+        
+        # Send batch notification if there are closed tasks (before updating the list)
+        closed_tasks = context.user_data.get("mytasks_closed", [])
+        if closed_tasks and chat_type != "private":
+            # Get all closed tasks info
+            closed_tasks_info = []
+            authors_set = set()
+            task_chat_id = task.chat_id
+            
+            for closed_task_data in closed_tasks:
+                closed_task = closed_task_data["task"]
+                closed_tasks_info.append(closed_task)
+                if closed_task.author_id != user_id:
+                    authors_set.add(closed_task.author_id)
+            
+            # Format notification message
+            if len(closed_tasks_info) == 1:
+                # Single task: [Имя] закрыл [задачу]
+                task_text = closed_tasks_info[0].text
+                closed_msg = f'✅ {user.display_name} закрыл "{task_text}"'
+            else:
+                # Multiple tasks: [Имя] закрыл [количество] задач
+                count = len(closed_tasks_info)
+                if count % 10 == 1 and count % 100 != 11:
+                    word = "задачу"
+                elif 2 <= count % 10 <= 4 and (count % 100 < 10 or count % 100 >= 20):
+                    word = "задачи"
+                else:
+                    word = "задач"
+                
+                closed_msg = f'✅ {user.display_name} закрыл {count} {word}'
+                
+                # Add task list
+                for i, closed_task in enumerate(closed_tasks_info, 1):
+                    closed_msg += f"\n{i}. {closed_task.text}"
+            
+            # Add authors FYI
+            if authors_set:
+                authors_list = ", ".join([str(aid) for aid in authors_set])
+                closed_msg += f"\n👤 {authors_list} FYI"
+            
+            # Send to chat
+            await context.bot.send_message(chat_id=task_chat_id, text=closed_msg)
+        
+        # Clear closed tasks list after sending
+        context.user_data["mytasks_closed"] = []
+        
         # Update the message
         if remaining_tasks:
             message_text = _format_mytasks_message(remaining_tasks)
@@ -2013,27 +2058,6 @@ async def _mytasks_close_task(
             await query.edit_message_text(message_text, reply_markup=keyboard)
         else:
             await query.edit_message_text("📋 Все задачи выполнены! 🎉")
-        
-        await session.commit()
-        
-        # Send notification
-        closed_tasks = context.user_data["mytasks_closed"]
-        if len(closed_tasks) == 1:
-            # Single task closed - format: [Имя] закрыл [задачу]
-            closed_msg = f'✅ {user.display_name} закрыл "{task.text}"'
-            
-            # Get author for FYI
-            result = await session.execute(select(User).where(User.id == task.author_id))
-            author = result.scalar_one_or_none()
-            if author and author.id != user_id:
-                closed_msg += f"\n👤 {author.id} FYI"
-            
-            # Send to chat if in group
-            if chat_type != "private":
-                await context.bot.send_message(chat_id=task.chat_id, text=closed_msg)
-        
-        # Clear closed tasks list after sending
-        context.user_data["mytasks_closed"] = []
 
 
 async def _mytasks_edit_task(
