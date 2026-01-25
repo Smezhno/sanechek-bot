@@ -1322,15 +1322,16 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         result = await session.execute(
                             select(User).where(User.id == task.author_id)
                         )
-                        author = result.scalar_one()
+                        author = result.scalar_one_or_none()
 
                         deadline_str = format_date(task.deadline)
                         overdue = "\n⚠️ Просрочена!" if task.is_overdue else ""
 
+                        author_name = author.display_name if author else "Неизвестен"
                         text = (
                             f"📌 {task.text}\n"
                             f"Чат: {chat_title}\n"
-                            f"Автор: {author.display_name}\n"
+                            f"Автор: {author_name}\n"
                             f"Дедлайн: {deadline_str}{overdue}"
                         )
 
@@ -1355,27 +1356,71 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # --- Task Actions ---
 
 async def done_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /done command - close a task (reply to task message)."""
-    if not update.message.reply_to_message:
-        await update.message.reply_text(MSG_REPLY_TO_TASK)
-        return
-
-    reply_to = update.message.reply_to_message
+    """Handle /done command - close a task (reply to task message or select from list)."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
+    task_id = None
 
-    async with get_session() as session:
-        result = await session.execute(
-            select(Task).where(
-                and_(
+    # If no reply provided, show user's active tasks to select from
+    if not update.message.reply_to_message:
+        async with get_session() as session:
+            # Get user's active tasks in this chat
+            result = await session.execute(
+                select(Task).where(
                     Task.chat_id == chat_id,
-                    (Task.command_message_id == reply_to.message_id) |
-                    (Task.confirmation_message_id == reply_to.message_id)
+                    Task.assignee_id == user_id,
+                    Task.status == TaskStatus.OPEN
+                ).order_by(Task.deadline)
+            )
+            tasks = list(result.scalars().all())
+
+            if not tasks:
+                await update.message.reply_text(MSG_NO_YOUR_TASKS_IN_CHAT)
+                return
+
+            if len(tasks) == 1:
+                # Only one task - close it directly
+                task_id = tasks[0].id
+            else:
+                # Multiple tasks - show selection buttons
+                buttons = []
+                for t in tasks[:8]:  # Max 8 buttons
+                    text_preview = t.text[:30] + "..." if len(t.text) > 30 else t.text
+                    buttons.append([InlineKeyboardButton(
+                        f"✅ {text_preview}",
+                        callback_data=f"task:close:{t.id}"
+                    )])
+
+                await update.message.reply_text(
+                    "Какую задачу закрыть?",
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+                return
+    else:
+        reply_to = update.message.reply_to_message
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(Task).where(
+                    and_(
+                        Task.chat_id == chat_id,
+                        (Task.command_message_id == reply_to.message_id) |
+                        (Task.confirmation_message_id == reply_to.message_id)
+                    )
                 )
             )
-        )
-        task = result.scalar_one_or_none()
+            task = result.scalar_one_or_none()
 
+            if not task:
+                await update.message.reply_text(MSG_NOT_A_TASK)
+                return
+
+            task_id = task.id
+
+    # Close the task
+    async with get_session() as session:
+        result = await session.execute(select(Task).where(Task.id == task_id))
+        task = result.scalar_one_or_none()
         if not task:
             await update.message.reply_text(MSG_NOT_A_TASK)
             return

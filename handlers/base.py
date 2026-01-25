@@ -79,8 +79,9 @@ def setup_handlers(app: Application) -> None:
     
     # Smart @bot mentions for task creation (must be BEFORE remind_handler)
     # Matches @bot <text> but NOT @bot ... напомни (reminders are separate)
+    # IMPORTANT: Exclude commands to prevent intercepting /summary@bot, /subscribe@bot, etc.
     app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(rf"(?i)@{settings.bot_username}") & ~filters.Regex(r"(?i)напомни"),
+        filters.TEXT & ~filters.COMMAND & filters.Regex(rf"(?i)@{settings.bot_username}") & ~filters.Regex(r"(?i)напомни"),
         mention_handler
     ))
 

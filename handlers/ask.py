@@ -116,8 +116,9 @@ async def reply_to_bot_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not update.message or not update.message.text:
         return
 
-    # Skip if waiting for task details
-    if context.user_data.get("waiting_assignee_for") or \
+    # Skip if in active conversation (ConversationHandler or waiting for input)
+    if context.user_data.get("in_conversation") or \
+       context.user_data.get("waiting_assignee_for") or \
        context.user_data.get("waiting_deadline_for") or \
        context.user_data.get("reminder_waiting_time"):
         return

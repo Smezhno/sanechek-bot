@@ -267,8 +267,9 @@ async def intent_router_handler(update: Update, context: ContextTypes.DEFAULT_TY
     user = update.effective_user
     chat = update.effective_chat
     
-    # Skip if in active conversation
-    if context.user_data.get("waiting_assignee_for") or \
+    # Skip if in active conversation (ConversationHandler or waiting for input)
+    if context.user_data.get("in_conversation") or \
+       context.user_data.get("waiting_assignee_for") or \
        context.user_data.get("waiting_deadline_for") or \
        context.user_data.get("reminder_waiting_time"):
         return

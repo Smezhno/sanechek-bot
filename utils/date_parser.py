@@ -82,23 +82,32 @@ NUMBER_WORDS = {
 def _extract_time(text: str) -> Tuple[Optional[int], Optional[int], str]:
     """Extract time (hour, minute) from text. Returns remaining text."""
     text_lower = text.lower().strip()
-    
-    # Pattern: "в 15:30" or "в 15.30" or "в 15"
-    time_pattern = r"в\s+(\d{1,2})(?:[:.](\d{2}))?"
-    match = re.search(time_pattern, text_lower)
+
+    # Pattern 1: "в 15:30" or "в 15.30" or "в 15"
+    time_pattern_with_v = r"в\s+(\d{1,2})(?:[:.](\d{2}))?"
+    match = re.search(time_pattern_with_v, text_lower)
     if match:
         hour = int(match.group(1))
         minute = int(match.group(2)) if match.group(2) else 0
         if 0 <= hour <= 23 and 0 <= minute <= 59:
             remaining = text_lower[:match.start()] + text_lower[match.end():]
             return hour, minute, remaining.strip()
-    
+
+    # Pattern 2: "15:30" or "15.30" without "в " prefix (for /edit command)
+    time_pattern_bare = r"^(\d{1,2})[:.](\d{2})$"
+    match = re.match(time_pattern_bare, text_lower)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute, ""
+
     # Check for time of day words
     for word, (hour, minute) in TIME_OF_DAY.items():
         if word in text_lower:
             remaining = text_lower.replace(word, "").strip()
             return hour, minute, remaining
-    
+
     return None, None, text_lower
 
 

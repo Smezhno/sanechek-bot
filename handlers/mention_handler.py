@@ -493,7 +493,7 @@ async def _get_user_message_context(
                 Message.user_id == user_id,
                 Message.message_id < current_message_id
             )
-            .order_by(Message.timestamp.desc())
+            .order_by(Message.created_at.desc())
             .limit(limit)
         )
         messages = result.scalars().all()
