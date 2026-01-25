@@ -1680,35 +1680,35 @@ async def _process_inline_edit(
                 task.deadline = new_deadline
                 changes.append(f"📅 Дедлайн: {format_date(new_deadline)}")
             except DateParseError:
-            # Not a deadline, try to find assignee
-            # Check for @username
-            username_match = re.search(r"@(\w+)", args_clean)
-            if username_match:
-                username = username_match.group(1)
-                new_assignee = await _find_user_by_username(session, username)
-                if new_assignee:
-                    task.assignee_id = new_assignee.id
-                    changes.append(f"👤 Исполнитель: {new_assignee.display_name}")
-            else:
-                # Try to find by name
-                members = await _get_chat_members(session, task.chat_id)
-                matching = await _find_user_by_name_fuzzy(members, args_clean)
-                
-                if len(matching) == 1:
-                    task.assignee_id = matching[0].id
-                    changes.append(f"👤 Исполнитель: {matching[0].display_name}")
-                elif len(matching) > 1:
-                    # Multiple matches
-                    names = ", ".join([m.display_name for m in matching[:3]])
-                    await update.message.reply_text(
-                        f"Найдено несколько людей: {names}\n"
-                        f"Уточни: /edit исполнитель @username"
-                    )
-                    return ConversationHandler.END
+                # Not a deadline, try to find assignee
+                # Check for @username
+                username_match = re.search(r"@(\w+)", args_clean)
+                if username_match:
+                    username = username_match.group(1)
+                    new_assignee = await _find_user_by_username(session, username)
+                    if new_assignee:
+                        task.assignee_id = new_assignee.id
+                        changes.append(f"👤 Исполнитель: {new_assignee.display_name}")
                 else:
-                    # Not an assignee either, treat as new task text
-                    task.text = args_clean[:settings.max_task_length]
-                    changes.append(f'📝 Текст: "{task.text}"')
+                    # Try to find by name
+                    members = await _get_chat_members(session, task.chat_id)
+                    matching = await _find_user_by_name_fuzzy(members, args_clean)
+                    
+                    if len(matching) == 1:
+                        task.assignee_id = matching[0].id
+                        changes.append(f"👤 Исполнитель: {matching[0].display_name}")
+                    elif len(matching) > 1:
+                        # Multiple matches
+                        names = ", ".join([m.display_name for m in matching[:3]])
+                        await update.message.reply_text(
+                            f"Найдено несколько людей: {names}\n"
+                            f"Уточни: /edit исполнитель @username"
+                        )
+                        return ConversationHandler.END
+                    else:
+                        # Not an assignee either, treat as new task text
+                        task.text = args_clean[:settings.max_task_length]
+                        changes.append(f'📝 Текст: "{task.text}"')
 
     if not changes:
         await update.message.reply_text(
