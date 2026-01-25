@@ -112,6 +112,16 @@ def _extract_time(text: str) -> Tuple[Optional[int], Optional[int], str]:
             remaining = text_lower[:match.start()] + text_lower[match.end():]
             return hour, minute, remaining.strip()
 
+    # Pattern 4: "26.01 18:00" or "26.01 18.00" - time after date (space-separated)
+    time_pattern_after_space = r"\s+(\d{1,2})(?:[:.](\d{2}))?\s*$"
+    match = re.search(time_pattern_after_space, text_lower)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2)) if match.group(2) else 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            remaining = text_lower[:match.start()].strip()
+            return hour, minute, remaining
+
     # Check for time of day words
     for word, (hour, minute) in TIME_OF_DAY.items():
         if word in text_lower:
@@ -306,9 +316,17 @@ def _parse_date_expression(text: str) -> Optional[datetime]:
                 target = now.replace(year=year, month=month, day=day, 
                                     hour=default_hour, minute=default_minute, 
                                     second=0, microsecond=0)
-                # If no year specified and date is in past, move to next year
-                if len(match.groups()) == 2 and target < now:
-                    target = target.replace(year=year + 1)
+                # If no year specified, check if date+time is in past
+                if len(match.groups()) == 2:
+                    # Check if the target datetime is in the past
+                    if target < now:
+                        # Check if date is today
+                        if target.date() == now.date():
+                            # Same date, but time has passed - use tomorrow
+                            target = target + timedelta(days=1)
+                        else:
+                            # Date is in the past, move to next year
+                            target = target.replace(year=year + 1)
                 return target
             except ValueError:
                 raise DateParseError("Некорректная дата")
