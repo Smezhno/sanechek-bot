@@ -1182,7 +1182,8 @@ async def tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    current_filter = context.user_data.get("tasks_filter", "all")
+    # Always start with "all" filter on new command call
+    current_filter = "all"
 
     async with get_session() as session:
         # Build query based on filter
@@ -1282,7 +1283,7 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 lines = ["📋 Твои задачи в этом чате:\n"]
 
                 for i, task in enumerate(tasks, 1):
-                    deadline_str = format_date(task.deadline)
+                    deadline_str = format_date(task.deadline) if task.deadline else "не указан"
                     overdue = " ⚠️ просрочена" if task.is_overdue else ""
                     lines.append(f"{i}. {task.text} | Дедлайн: {deadline_str}{overdue}")
 
@@ -1324,7 +1325,7 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         )
                         author = result.scalar_one_or_none()
 
-                        deadline_str = format_date(task.deadline)
+                        deadline_str = format_date(task.deadline) if task.deadline else "не указан"
                         overdue = "\n⚠️ Просрочена!" if task.is_overdue else ""
 
                         author_name = author.display_name if author else "Неизвестен"
@@ -1350,6 +1351,10 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
     except Exception as e:
         logger.exception(f"Error in mytasks_handler: {e}")
+        error_msg = f"❌ Ошибка при получении задач: {type(e).__name__}"
+        if hasattr(e, 'args') and e.args:
+            error_msg += f" - {str(e.args[0])[:100]}"
+        logger.error(f"mytasks_handler error details: {error_msg}")
         await update.message.reply_text("❌ Чёт не вышло показать задачи. Попробуй позже.")
 
 
@@ -1658,12 +1663,23 @@ async def _process_inline_edit(
 
     # Smart parsing if no keywords found
     if not changes:
-        # Try to parse as deadline first
-        try:
-            new_deadline = parse_deadline(args_clean)
+        # First, try to extract time only (for editing time on existing deadline)
+        from utils.date_parser import _extract_time
+        hour, minute, remaining_after_time = _extract_time(args_clean)
+        
+        # If only time specified and task has existing deadline, update time only
+        if hour is not None and task.deadline and not remaining_after_time.strip():
+            # Update only time, keep existing date
+            new_deadline = task.deadline.replace(hour=hour, minute=minute, second=0, microsecond=0)
             task.deadline = new_deadline
             changes.append(f"📅 Дедлайн: {format_date(new_deadline)}")
-        except DateParseError:
+        else:
+            # Try to parse as full deadline
+            try:
+                new_deadline = parse_deadline(args_clean)
+                task.deadline = new_deadline
+                changes.append(f"📅 Дедлайн: {format_date(new_deadline)}")
+            except DateParseError:
             # Not a deadline, try to find assignee
             # Check for @username
             username_match = re.search(r"@(\w+)", args_clean)
@@ -1820,6 +1836,9 @@ async def receive_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 else:
                     await update.message.reply_text(MSG_USER_NOT_FOUND)
                     return States.EDIT_VALUE
+
+        # Commit all changes
+        await session.commit()
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -2174,6 +2193,7 @@ async def _close_task_callback(
     """Close task from callback button."""
     query = update.callback_query
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
 
     async with get_session() as session:
         result = await session.execute(select(Task).where(Task.id == task_id))
@@ -2200,24 +2220,94 @@ async def _close_task_callback(
         result = await session.execute(select(User).where(User.id == user_id))
         closer = result.scalar_one()
 
-        msg = f'✅ Готово: "{task.text}"\nСделал: {closer.display_name}'
-        if next_task:
-            msg += f"\n🔄 Следующая: {format_date(next_task.deadline)}"
+        # Check if this is from task list (message contains "Активные задачи")
+        message_text = query.message.text or ""
+        is_from_task_list = "Активные задачи" in message_text or "📋" in message_text
 
-        await query.edit_message_text(msg)
+        if is_from_task_list and update.effective_chat.type != "private":
+            # Update task list instead of replacing message
+            current_filter = context.user_data.get("tasks_filter", "all")
+            
+            query_obj = select(Task).where(
+                Task.chat_id == chat_id,
+                Task.status == TaskStatus.OPEN
+            )
 
-        # Notify in chat
-        result = await session.execute(select(Chat).where(Chat.id == task.chat_id))
-        chat = result.scalar_one()
+            if current_filter == "my":
+                query_obj = query_obj.where(Task.assignee_id == user_id)
+            elif current_filter == "overdue":
+                query_obj = query_obj.where(Task.deadline < datetime.utcnow())
 
-        chat_msg = f'✅ {closer.display_name} закрыл задачу "{task.text}"'
-        if next_task:
-            chat_msg += f"\n🔄 Следующая: {format_date(next_task.deadline)}"
+            result = await session.execute(query_obj)
+            tasks = list(result.scalars().all())
+            tasks = _sort_tasks_by_urgency(tasks)
 
-        try:
-            await context.bot.send_message(chat_id=task.chat_id, text=chat_msg)
-        except Exception as e:
-            logger.debug(f"Failed to notify chat about closed task: {e}")
+            if not tasks:
+                if current_filter == "all":
+                    text = MSG_NO_ACTIVE_TASKS
+                elif current_filter == "my":
+                    text = MSG_NO_YOUR_TASKS_IN_CHAT
+                else:
+                    text = "📋 Нет просроченных задач"
+                await query.edit_message_text(text)
+            else:
+                # Rebuild task list
+                now = datetime.utcnow()
+                lines = ["📋 Активные задачи:\n"]
+
+                for i, t in enumerate(tasks[:10], 1):
+                    if t.assignee_id:
+                        result = await session.execute(
+                            select(User).where(User.id == t.assignee_id)
+                        )
+                        assignee = result.scalar_one_or_none()
+                        assignee_name = assignee.display_name if assignee else "?"
+                    else:
+                        assignee_name = "—"
+
+                    if t.deadline:
+                        if t.deadline < now:
+                            deadline_str = f"⚠️ просрочена"
+                        elif t.deadline.date() == now.date():
+                            deadline_str = f"⏰ сегодня {t.deadline.strftime('%H:%M')}"
+                        else:
+                            deadline_str = format_date(t.deadline)
+                    else:
+                        deadline_str = "без дедлайна"
+
+                    recurrence_str = ""
+                    if t.recurrence != RecurrenceType.NONE:
+                        recurrence_str = f" 🔁"
+
+                    lines.append(
+                        f"{i}. {t.text}\n"
+                        f"   👤 {assignee_name} | 📅 {deadline_str}{recurrence_str}\n"
+                    )
+
+                if len(tasks) > 10:
+                    lines.append(f"\n...и ещё {len(tasks) - 10} задач")
+
+                keyboard = _build_task_list_keyboard(tasks, current_filter=current_filter)
+                await query.edit_message_text("\n".join(lines), reply_markup=keyboard)
+        else:
+            # From task details - show close message
+            msg = f'✅ Готово: "{task.text}"\nСделал: {closer.display_name}'
+            if next_task:
+                msg += f"\n🔄 Следующая: {format_date(next_task.deadline)}"
+            await query.edit_message_text(msg)
+
+        # Notify in chat only if this is a callback from task list (not from task details)
+        # Check if we're in a group chat and the message is different from the one we just edited
+        if update.effective_chat.type != "private":
+            try:
+                # Only send notification if the closed task was from a different message
+                # (i.e., closed from task list, not from task details message)
+                chat_msg = f'✅ {closer.display_name} закрыл задачу "{task.text}"'
+                if next_task:
+                    chat_msg += f"\n🔄 Следующая: {format_date(next_task.deadline)}"
+                await context.bot.send_message(chat_id=task.chat_id, text=chat_msg)
+            except Exception as e:
+                logger.debug(f"Failed to notify chat about closed task: {e}")
 
 
 async def _show_closed_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

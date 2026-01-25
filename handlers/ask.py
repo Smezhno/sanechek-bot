@@ -221,9 +221,10 @@ async def _handle_task_close_from_reply(
     intent_result
 ) -> None:
     """Handle task closing from a reply."""
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    from database.models import User
+    from database import get_session
+    from database.models import User, TaskStatus
     from sqlalchemy import select
+    from datetime import datetime
     
     task = reply_context.get("task")
     if not task:
@@ -248,16 +249,37 @@ async def _handle_task_close_from_reply(
             )
             return
     
-    # Show confirmation button
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Да, закрыть", callback_data=f"task:close_confirm:{task.id}"),
-            InlineKeyboardButton("❌ Нет", callback_data="task:close_cancel")
-        ]
-    ])
-    
-    await update.message.reply_text(
-        f'Закрыть задачу "{task.text}"?',
-        reply_markup=keyboard
-    )
+    # If high confidence, close immediately; otherwise show confirmation
+    if intent_result.confidence >= 0.8:
+        # Close task directly
+        async with get_session() as session:
+            if task.status == TaskStatus.CLOSED:
+                await update.message.reply_text("✅ Задача уже закрыта")
+                return
+            
+            task.status = TaskStatus.CLOSED
+            task.closed_at = datetime.utcnow()
+            task.closed_by = user_id
+            
+            result = await session.execute(select(User).where(User.id == user_id))
+            closer = result.scalar_one()
+            
+            await update.message.reply_text(
+                f'✅ Задача закрыта: "{task.text}"\nСделал: {closer.display_name}'
+            )
+            await session.commit()
+    else:
+        # Show confirmation for lower confidence
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Да, закрыть", callback_data=f"task:close_confirm:{task.id}"),
+                InlineKeyboardButton("❌ Нет", callback_data="task:close_cancel")
+            ]
+        ])
+        
+        await update.message.reply_text(
+            f'Закрыть задачу "{task.text}"?',
+            reply_markup=keyboard
+        )
 

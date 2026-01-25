@@ -93,14 +93,24 @@ def _extract_time(text: str) -> Tuple[Optional[int], Optional[int], str]:
             remaining = text_lower[:match.start()] + text_lower[match.end():]
             return hour, minute, remaining.strip()
 
-    # Pattern 2: "15:30" or "15.30" without "в " prefix (for /edit command)
-    time_pattern_bare = r"^(\d{1,2})[:.](\d{2})$"
+    # Pattern 2: "15:30" or "15.30" or "15" without "в " prefix (for /edit command)
+    time_pattern_bare = r"^(\d{1,2})(?:[:.](\d{2}))?$"
     match = re.match(time_pattern_bare, text_lower)
     if match:
         hour = int(match.group(1))
-        minute = int(match.group(2))
+        minute = int(match.group(2)) if match.group(2) else 0
         if 0 <= hour <= 23 and 0 <= minute <= 59:
             return hour, minute, ""
+
+    # Pattern 3: "на 12" or "на 15:30" (time format)
+    time_pattern_na = r"на\s+(\d{1,2})(?:[:.](\d{2}))?"
+    match = re.search(time_pattern_na, text_lower)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2)) if match.group(2) else 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            remaining = text_lower[:match.start()] + text_lower[match.end():]
+            return hour, minute, remaining.strip()
 
     # Check for time of day words
     for word, (hour, minute) in TIME_OF_DAY.items():
@@ -116,7 +126,7 @@ def _parse_relative_time(text: str) -> Optional[datetime]:
     text_lower = text.lower().strip()
     now = now_in_tz()
     
-    # "через X минут/часов/дней"
+    # "через X минут/часов/дней/недель/месяцев"
     patterns = [
         (r"через\s+(\d+)\s+минут", "minutes"),
         (r"через\s+(\d+)\s+мин", "minutes"),
@@ -130,6 +140,14 @@ def _parse_relative_time(text: str) -> Optional[datetime]:
         (r"через\s+(\d+)\s+дней", "days"),
         (r"через\s+день", "one_day"),
         (r"через\s+полчаса", "half_hour"),
+        (r"через\s+(\d+)\s+недел", "weeks"),
+        (r"через\s+(\d+)\s+неделю", "weeks"),
+        (r"через\s+(\d+)\s+недели", "weeks"),
+        (r"через\s+неделю", "one_week"),
+        (r"через\s+(\d+)\s+месяц", "months"),
+        (r"через\s+(\d+)\s+месяца", "months"),
+        (r"через\s+(\d+)\s+месяцев", "months"),
+        (r"через\s+месяц", "one_month"),
     ]
     
     for pattern, unit in patterns:
@@ -143,6 +161,11 @@ def _parse_relative_time(text: str) -> Optional[datetime]:
                 return now + timedelta(hours=1)
             elif unit == "one_day":
                 return (now + timedelta(days=1)).replace(hour=0, minute=1)
+            elif unit == "one_week":
+                return (now + timedelta(weeks=1)).replace(hour=0, minute=1)
+            elif unit == "one_month":
+                # Approximate: add 30 days
+                return (now + timedelta(days=30)).replace(hour=0, minute=1)
             value = int(match.group(1))
             if unit == "minutes":
                 return now + timedelta(minutes=value)
@@ -150,6 +173,11 @@ def _parse_relative_time(text: str) -> Optional[datetime]:
                 return now + timedelta(hours=value)
             elif unit == "days":
                 return (now + timedelta(days=value)).replace(hour=0, minute=1)
+            elif unit == "weeks":
+                return (now + timedelta(weeks=value)).replace(hour=0, minute=1)
+            elif unit == "months":
+                # Approximate: multiply days by 30
+                return (now + timedelta(days=value * 30)).replace(hour=0, minute=1)
     
     # Check for word numbers: "через два часа"
     for word, value in NUMBER_WORDS.items():
@@ -160,6 +188,8 @@ def _parse_relative_time(text: str) -> Optional[datetime]:
             (rf"через\s+{word}\s+минут", "minutes", value),
             (rf"через\s+{word}\s+час", "hours", value),
             (rf"через\s+{word}\s+дн", "days", value),
+            (rf"через\s+{word}\s+недел", "weeks", value),
+            (rf"через\s+{word}\s+месяц", "months", value),
         ]
         
         for pattern, unit, val in patterns_word:
@@ -170,6 +200,10 @@ def _parse_relative_time(text: str) -> Optional[datetime]:
                     return now + timedelta(hours=val)
                 elif unit == "days":
                     return (now + timedelta(days=val)).replace(hour=0, minute=1)
+                elif unit == "weeks":
+                    return (now + timedelta(weeks=val)).replace(hour=0, minute=1)
+                elif unit == "months":
+                    return (now + timedelta(days=val * 30)).replace(hour=0, minute=1)
     
     return None
 
