@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 MAX_USER_BUTTONS = 5
+TASKS_PER_PAGE = 8
 
 # Message constants
 MSG_GROUP_ONLY = "Эта команда работает только в групповых чатах"
@@ -1255,17 +1256,30 @@ async def tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("\n".join(lines), reply_markup=keyboard)
 
 
-def _build_mytasks_keyboard(tasks: list[Task]) -> InlineKeyboardMarkup:
-    """Build keyboard for /mytasks with task list."""
+def _build_mytasks_keyboard(tasks: list[Task], page: int = 0, total_pages: int = 1) -> InlineKeyboardMarkup:
+    """Build keyboard for /mytasks with task list and pagination."""
     buttons = []
+    start_idx = page * TASKS_PER_PAGE
+    end_idx = start_idx + TASKS_PER_PAGE
+    page_tasks = tasks[start_idx:end_idx]
     
-    for task in tasks:
-        # Buttons in one row: edit and close buttons
+    for i, task in enumerate(page_tasks, start=start_idx + 1):
+        # Buttons in one row: number, edit and close buttons
         row = [
-            InlineKeyboardButton("✏️", callback_data=f"mytasks:edit:{task.id}"),
-            InlineKeyboardButton("✅", callback_data=f"mytasks:close:{task.id}")
+            InlineKeyboardButton(f"{i} ✏️", callback_data=f"mytasks:edit:{task.id}:{page}"),
+            InlineKeyboardButton(f"{i} ✅", callback_data=f"mytasks:close:{task.id}:{page}")
         ]
         buttons.append(row)
+    
+    # Pagination buttons
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"mytasks:page:{page - 1}"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"mytasks:page:{page + 1}"))
+        if nav_buttons:
+            buttons.append(nav_buttons)
     
     # Close button at the bottom
     buttons.append([InlineKeyboardButton("❌ Закрыть", callback_data="mytasks:close_form")])
@@ -1273,13 +1287,17 @@ def _build_mytasks_keyboard(tasks: list[Task]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-def _format_mytasks_message(tasks: list[Task]) -> str:
+def _format_mytasks_message(tasks: list[Task], page: int = 0) -> str:
     """Format message for /mytasks command."""
+    start_idx = page * TASKS_PER_PAGE
+    end_idx = start_idx + TASKS_PER_PAGE
+    page_tasks = tasks[start_idx:end_idx]
+    
     lines = ["📋 Твои задачи:\n"]
     
-    for i, task in enumerate(tasks, 1):
-        # Status icon
-        status_icon = "⚠️" if task.is_overdue else "✅"
+    for i, task in enumerate(page_tasks, start=start_idx + 1):
+        # Status icon for overdue
+        status_prefix = "⚠️ " if task.is_overdue else ""
         
         # Deadline
         if task.deadline:
@@ -1287,9 +1305,14 @@ def _format_mytasks_message(tasks: list[Task]) -> str:
         else:
             deadline_str = "нет ддл"
         
-        # Format: [icon] [text] | [deadline]
+        # Format: [number] [status] [text] | [deadline]
         # Full task text is shown, not truncated
-        lines.append(f"{status_icon} {task.text}\n   | {deadline_str}\n")
+        lines.append(f"{i}. {status_prefix}{task.text}\n   | {deadline_str}\n")
+    
+    # Add page info if multiple pages
+    total_pages = (len(tasks) + TASKS_PER_PAGE - 1) // TASKS_PER_PAGE
+    if total_pages > 1:
+        lines.append(f"\nСтраница {page + 1} из {total_pages}")
     
     return "\n".join(lines)
 
@@ -1319,9 +1342,10 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await update.message.reply_text(MSG_NO_YOUR_TASKS_IN_CHAT)
                     return
 
-                # Build message and keyboard
-                message_text = _format_mytasks_message(tasks)
-                keyboard = _build_mytasks_keyboard(tasks)
+                # Build message and keyboard (page 0)
+                total_pages = (len(tasks) + TASKS_PER_PAGE - 1) // TASKS_PER_PAGE
+                message_text = _format_mytasks_message(tasks, page=0)
+                keyboard = _build_mytasks_keyboard(tasks, page=0, total_pages=total_pages)
                 
                 await update.message.reply_text(message_text, reply_markup=keyboard)
             else:
@@ -1340,9 +1364,10 @@ async def mytasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await update.message.reply_text(MSG_NO_YOUR_TASKS)
                     return
 
-                # Build message and keyboard (all tasks in one form)
-                message_text = _format_mytasks_message(tasks)
-                keyboard = _build_mytasks_keyboard(tasks)
+                # Build message and keyboard (page 0)
+                total_pages = (len(tasks) + TASKS_PER_PAGE - 1) // TASKS_PER_PAGE
+                message_text = _format_mytasks_message(tasks, page=0)
+                keyboard = _build_mytasks_keyboard(tasks, page=0, total_pages=total_pages)
                 
                 await update.message.reply_text(message_text, reply_markup=keyboard)
     except Exception as e:
@@ -1841,10 +1866,11 @@ async def receive_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if mytasks_edit:
             user_id = mytasks_edit["user_id"]
             chat_id = mytasks_edit.get("chat_id")
+            page = mytasks_edit.get("page", 0)
             context.user_data.pop("mytasks_edit", None)
             
             # Show updated task list
-            await _mytasks_show_list_for_user(update, context, user_id, chat_id)
+            await _mytasks_show_list_for_user(update, context, user_id, chat_id, page)
             context.user_data.clear()
             return ConversationHandler.END
 
@@ -1891,8 +1917,11 @@ async def _mytasks_show_list_for_user(
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
             return
         
-        message_text = _format_mytasks_message(tasks)
-        keyboard = _build_mytasks_keyboard(tasks)
+        total_pages = (len(tasks) + TASKS_PER_PAGE - 1) // TASKS_PER_PAGE
+        # Ensure page is within bounds
+        page = max(0, min(page, total_pages - 1)) if total_pages > 0 else 0
+        message_text = _format_mytasks_message(tasks, page=page)
+        keyboard = _build_mytasks_keyboard(tasks, page=page, total_pages=total_pages)
         
         if update.message:
             await update.message.reply_text(message_text, reply_markup=keyboard)
@@ -1918,27 +1947,38 @@ async def mytasks_callback_handler(update: Update, context: ContextTypes.DEFAULT
     if action == "close":
         # Close single task
         task_id = int(data[2])
-        await _mytasks_close_task(update, context, task_id)
+        page = int(data[3]) if len(data) > 3 else 0
+        await _mytasks_close_task(update, context, task_id, page)
     
     elif action == "edit":
         # Edit task
         task_id = int(data[2])
-        await _mytasks_edit_task(update, context, task_id)
+        page = int(data[3]) if len(data) > 3 else 0
+        await _mytasks_edit_task(update, context, task_id, page)
     
     elif action == "close_form":
         # Close the form
         await query.edit_message_text("📋 Список задач закрыт.")
     
+    elif action == "page":
+        # Navigate to page
+        page = int(data[2])
+        chat_type = update.effective_chat.type
+        chat_id = update.effective_chat.id if chat_type != "private" else None
+        await _mytasks_show_list(update, context, user_id, chat_id, page)
+    
     elif action == "back_to_list":
         # Return to task list
         chat_id = int(data[2]) if len(data) > 2 else None
-        await _mytasks_show_list(update, context, user_id, chat_id)
+        page = int(data[3]) if len(data) > 3 else 0
+        await _mytasks_show_list(update, context, user_id, chat_id, page)
 
 
 async def _mytasks_close_task(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    task_id: int
+    task_id: int,
+    page: int = 0
 ) -> None:
     """Close task from mytasks form and update the list."""
     query = update.callback_query
@@ -2051,10 +2091,13 @@ async def _mytasks_close_task(
         # Clear closed tasks list after sending
         context.user_data["mytasks_closed"] = []
         
-        # Update the message
+        # Update the message with pagination
         if remaining_tasks:
-            message_text = _format_mytasks_message(remaining_tasks)
-            keyboard = _build_mytasks_keyboard(remaining_tasks)
+            total_pages = (len(remaining_tasks) + TASKS_PER_PAGE - 1) // TASKS_PER_PAGE
+            # Adjust page if current page is beyond available pages
+            current_page = min(page, total_pages - 1) if total_pages > 0 else 0
+            message_text = _format_mytasks_message(remaining_tasks, page=current_page)
+            keyboard = _build_mytasks_keyboard(remaining_tasks, page=current_page, total_pages=total_pages)
             await query.edit_message_text(message_text, reply_markup=keyboard)
         else:
             await query.edit_message_text("📋 Все задачи выполнены! 🎉")
@@ -2063,7 +2106,8 @@ async def _mytasks_close_task(
 async def _mytasks_edit_task(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    task_id: int
+    task_id: int,
+    page: int = 0
 ) -> None:
     """Show edit form for task."""
     query = update.callback_query
@@ -2080,7 +2124,8 @@ async def _mytasks_edit_task(
         context.user_data["mytasks_edit"] = {
             "task_id": task_id,
             "chat_id": task.chat_id,
-            "user_id": update.effective_user.id
+            "user_id": update.effective_user.id,
+            "page": page
         }
         
         # Get assignee
@@ -2109,40 +2154,9 @@ async def _mytasks_edit_task(
                 InlineKeyboardButton("Исполнитель", callback_data=f"task:edit_field:assignee:{task_id}"),
             ],
             [
-                InlineKeyboardButton("« Назад к списку", callback_data=f"mytasks:back_to_list:{task.chat_id}")
+                InlineKeyboardButton("« Назад к списку", callback_data=f"mytasks:back_to_list:{task.chat_id}:{page}")
             ]
         ])
-        
-        await query.edit_message_text(message_text, reply_markup=keyboard)
-
-
-async def _mytasks_show_list(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    user_id: int,
-    chat_id: int
-) -> None:
-    """Show mytasks list."""
-    query = update.callback_query
-    
-    async with get_session() as session:
-        result = await session.execute(
-            select(Task)
-            .where(
-                Task.assignee_id == user_id,
-                Task.chat_id == chat_id,
-                Task.status == TaskStatus.OPEN
-            )
-            .order_by(Task.deadline)
-        )
-        tasks = list(result.scalars().all())
-        
-        if not tasks:
-            await query.edit_message_text(MSG_NO_YOUR_TASKS_IN_CHAT)
-            return
-        
-        message_text = _format_mytasks_message(tasks)
-        keyboard = _build_mytasks_keyboard(tasks)
         
         await query.edit_message_text(message_text, reply_markup=keyboard)
 
